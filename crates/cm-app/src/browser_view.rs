@@ -531,8 +531,12 @@ impl BrowserView {
             modifiers,
         });
 
-        if let Some(text) = key_char {
-            if !event.keystroke.modifiers.control && !event.keystroke.modifiers.platform {
+        if !event.keystroke.modifiers.control && !event.keystroke.modifiers.platform {
+            // Enter often arrives without a usable key_char; CEF needs a CHAR
+            // event with '\r' for keypress / form submission.
+            if matches!(event.keystroke.key.as_str(), "enter" | "return") {
+                engine.text("\r");
+            } else if let Some(text) = key_char {
                 engine.text(&text);
             }
         }

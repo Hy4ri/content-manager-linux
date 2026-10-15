@@ -855,7 +855,10 @@ impl BrowserEngine {
                     key_evt.modifiers = to_cef_modifiers(event.modifiers);
                     key_evt.windows_key_code = map_key_code(&event.key);
 
-                    if let Some(t) = event.text {
+                    if matches!(event.key.as_str(), "enter" | "return") {
+                        key_evt.character = 0x0D;
+                        key_evt.unmodified_character = 0x0D;
+                    } else if let Some(t) = event.text {
                         if let Some(ch) = t.encode_utf16().next() {
                             key_evt.character = ch;
                             key_evt.unmodified_character = ch;
@@ -879,6 +882,9 @@ impl BrowserEngine {
                         evt.type_ = KeyEventType::CHAR;
                         evt.character = ch;
                         evt.unmodified_character = ch;
+                        if ch == 0x0D {
+                            evt.windows_key_code = 0x0D;
+                        }
                         host.send_key_event(Some(&evt));
                     }
                 }
