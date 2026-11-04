@@ -2014,6 +2014,17 @@ impl CmApp {
         self.refilter(cx);
     }
 
+    fn toggle_picker_order(&mut self, cx: &mut Context<Self>) {
+        match self.picker {
+            Some(PickerKind::Car) => self.car_sort_desc = !self.car_sort_desc,
+            Some(PickerKind::Track) => self.track_sort_desc = !self.track_sort_desc,
+            None => return,
+        }
+        self.picker_focus = 0;
+        self.picker_scroll.scroll_to_item(0, ScrollStrategy::Top);
+        self.refilter(cx);
+    }
+
     /// Steps the brand filter through All → each brand → All.
     fn cycle_picker_brand(&mut self, dir: i32, cx: &mut Context<Self>) {
         let brands = &self.content.car_brands;
@@ -2054,6 +2065,7 @@ impl CmApp {
                 input.read(cx).focus(window);
             }
             "X" => self.cycle_picker_sort(cx),
+            "RSHOULDER" => self.toggle_picker_order(cx),
             "LTRIGGER" if kind == PickerKind::Car => self.cycle_picker_brand(-1, cx),
             "RTRIGGER" if kind == PickerKind::Car => self.cycle_picker_brand(1, cx),
             _ => {}
@@ -2435,6 +2447,7 @@ impl CmApp {
             hint(dev.label(NavAction::Back), "Close"),
             hint(dev.label(NavAction::Search), "Search"),
             hint(dev.label(NavAction::Secondary), "Sort"),
+            hint(dev.label(NavAction::TabNext), "Order"),
         ];
         if cars {
             hints.push(hint(&format!("{}/{}", dev.label(NavAction::SubPrev), dev.label(NavAction::SubNext)), "Brand"));
@@ -2462,8 +2475,12 @@ impl CmApp {
                     .child(div().text_sm().text_color(theme::muted()).child(counter))
                     .child(div().flex_1())
                     .child(
-                        button("pick-sort", format!("Sort: {sort_label} {}", if desc { "↓" } else { "↑" }))
+                        button("pick-sort", format!("Sort: {sort_label}"))
                             .on_click(cx.listener(|this, _, _, cx| this.cycle_picker_sort(cx))),
+                    )
+                    .child(
+                        button("pick-order", if desc { "↓ Descending" } else { "↑ Ascending" })
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_picker_order(cx))),
                     )
                     .when(cars, |d| {
                         d.child(
