@@ -105,6 +105,27 @@ fn picker_geometry(viewport_w: f32) -> (usize, f32) {
     (cols, (avail - 12. * (cols as f32 - 1.)) / cols as f32)
 }
 
+/// Height of the top tab bar and the footer hint bar (56 px each plus a 1 px border).
+const CHROME_H: f32 = 2. * 57.;
+/// Fixed width of the Drive page's session column.
+const DRIVE_SESSION_W: f32 = 460.;
+/// Car card height that is not the picture: `p_3` padding, title block, two `gap_2` and the skin row
+/// (measured in a 1360x768 and a 1920x1080 screenshot).
+const DRIVE_CAR_CHROME_H: f32 = 24. + 78. + 16. + 40.;
+
+/// Car picture and track thumbnail heights that fill the Drive page's left column.
+///
+/// The car picture takes all height that the track card does not use, but stays
+/// no wider than the column at the 16:9 aspect of AC previews.
+fn drive_geometry(viewport_w: f32, viewport_h: f32) -> (f32, f32) {
+    let page_h = viewport_h - CHROME_H - 2. * 16.;
+    // 108 px keeps the four text lines of the track card inside the thumbnail height.
+    let track_h = (page_h * 0.15).clamp(108., 150.);
+    let left_w = viewport_w - SIDEBAR_W - 2. * 16. - 16. - DRIVE_SESSION_W - 24.;
+    let car_h = (page_h - 12. - (track_h + 24.) - DRIVE_CAR_CHROME_H).min(left_w * 9. / 16.).max(180.);
+    (car_h, track_h)
+}
+
 /// Next list index after moving `delta` rows, clamped; starts at the top with no selection.
 fn step_index(pos: Option<usize>, delta: isize, len: usize) -> usize {
     match pos {
@@ -2126,7 +2147,7 @@ impl CmApp {
         .child(control)
     }
 
-    fn quick_drive_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn quick_drive_page(&self, car_h: f32, track_h: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let car = self.selected_car();
         let skin = car.and_then(|c| c.skins.get(self.skin));
         let track = self.selected_track();
@@ -2174,7 +2195,7 @@ impl CmApp {
                     cx.notify();
                 }))),
         )
-        .child(picture(skin.and_then(|s| s.preview.clone()), 230.).w_full())
+        .child(picture(skin.and_then(|s| s.preview.clone()), car_h).w_full())
         .child(
             div()
                 .flex()
@@ -2205,7 +2226,7 @@ impl CmApp {
             this.drive_focus = 1;
             cx.notify();
         }))
-        .child(picture(track.and_then(|t| t.layout.preview.clone()), 84.).w(px(150.)))
+        .child(picture(track.and_then(|t| t.layout.preview.clone()), track_h).w(px(track_h * 16. / 9.)))
         .child(
             div()
                 .flex()
@@ -2224,7 +2245,7 @@ impl CmApp {
                 .child(div().text_sm().text_color(theme::muted()).truncate().child(track_place))
                 .child(div().text_sm().text_color(theme::muted()).child(track_size)),
         )
-        .child(picture(track.and_then(|t| t.layout.outline.clone()), 72.).w(px(72.)))
+        .child(picture(track.and_then(|t| t.layout.outline.clone()), track_h).w(px(track_h)))
         .child(button("track-change", "Change").on_click(cx.listener(|this, _, window, cx| {
             this.drive_focus = 1;
             this.open_picker(PickerKind::Track, window);
@@ -2330,7 +2351,7 @@ impl CmApp {
                     .id("drive-right")
                     .flex()
                     .flex_col()
-                    .w(px(460.))
+                    .w(px(DRIVE_SESSION_W))
                     .flex_shrink_0()
                     .h_full()
                     .overflow_y_scroll()
@@ -3055,7 +3076,11 @@ impl Render for CmApp {
                 .into_any_element()
         } else {
             match self.page {
-                Page::QuickDrive => self.quick_drive_page(cx).into_any_element(),
+                Page::QuickDrive => {
+                    let vp = window.viewport_size();
+                    let (car_h, track_h) = drive_geometry(f32::from(vp.width), f32::from(vp.height));
+                    self.quick_drive_page(car_h, track_h, cx).into_any_element()
+                }
                 Page::Cars => self.cars_page(cx).into_any_element(),
                 Page::Tracks => self.tracks_page(cx).into_any_element(),
                 Page::Career | Page::SpecialEvents => div().size_full().children(self.events.clone()).into_any_element(),
