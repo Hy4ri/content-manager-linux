@@ -26,6 +26,7 @@ use crate::text_input::TextInput;
 use crate::theme;
 use crate::widgets::{
     button, chip, field, focus_ring, hint, hint_bar, panel, picture, primary_button, section_title, segmented,
+    track_map,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2245,7 +2246,11 @@ impl CmApp {
                 .child(div().text_sm().text_color(theme::muted()).truncate().child(track_place))
                 .child(div().text_sm().text_color(theme::muted()).child(track_size)),
         )
-        .child(picture(track.and_then(|t| t.layout.outline.clone()), track_h).w(px(track_h)))
+        .child(track_map(
+            track.and_then(|t| t.layout.racing_line.clone()),
+            track.and_then(|t| t.layout.outline.clone()),
+            track_h,
+        ))
         .child(button("track-change", "Change").on_click(cx.listener(|this, _, window, cx| {
             this.drive_focus = 1;
             this.open_picker(PickerKind::Track, window);
@@ -2745,7 +2750,7 @@ impl CmApp {
                                 .flex()
                                 .gap_3()
                                 .child(picture(l.preview.clone(), 240.).flex_1().min_w_0())
-                                .child(picture(l.outline.clone(), 240.).w(px(240.))),
+                                .child(track_map(l.racing_line.clone(), l.outline.clone(), 240.)),
                         )
                         .child(info)
                         .when(!l.tags.is_empty(), |d| {

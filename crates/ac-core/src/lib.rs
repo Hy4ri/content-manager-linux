@@ -5,6 +5,7 @@
 //! Content Manager 0.8.2782.
 
 pub mod acd;
+pub mod ai_line;
 pub mod bookmarks;
 pub mod browser_session;
 pub mod content;

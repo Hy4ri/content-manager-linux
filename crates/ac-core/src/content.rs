@@ -3,9 +3,11 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::ai_line::{self, RacingLine};
 use crate::ini::IniFile;
 use crate::json;
 
@@ -83,6 +85,8 @@ pub struct TrackLayout {
     pub tags: Vec<String>,
     pub preview: Option<PathBuf>,
     pub outline: Option<PathBuf>,
+    /// AI racing line from `ai/fast_lane.ai`, drawn instead of `outline` when present.
+    pub racing_line: Option<Arc<RacingLine>>,
 }
 
 #[derive(Debug, Clone)]
@@ -283,7 +287,7 @@ pub fn scan_cars(ac_root: &Path) -> Vec<Car> {
     cars
 }
 
-fn load_layout(track_id: &str, ui_dir: &Path, layout_id: Option<String>) -> Option<TrackLayout> {
+fn load_layout(track_id: &str, ui_dir: &Path, ai_dir: &Path, layout_id: Option<String>) -> Option<TrackLayout> {
     let ui_json = ui_dir.join("ui_track.json");
     if !ui_json.is_file() {
         return None;
@@ -303,6 +307,7 @@ fn load_layout(track_id: &str, ui_dir: &Path, layout_id: Option<String>) -> Opti
         tags: v.as_ref().map(tags).unwrap_or_default(),
         preview: existing(ui_dir.join("preview.png")),
         outline: existing(ui_dir.join("outline.png")),
+        racing_line: ai_line::read(&ai_dir.join("fast_lane.ai")).map(Arc::new),
         layout_id,
     })
 }
@@ -311,7 +316,7 @@ pub fn load_track(dir: &Path) -> Track {
     let id = dir_name(dir);
     let ui = dir.join("ui");
     let mut layouts = Vec::new();
-    if let Some(l) = load_layout(&id, &ui, None) {
+    if let Some(l) = load_layout(&id, &ui, &dir.join("ai"), None) {
         layouts.push(l);
     }
     // Multi-layout tracks keep one ui folder per layout; the layout must also
@@ -321,7 +326,7 @@ pub fn load_track(dir: &Path) -> Track {
         if !dir.join(&layout_id).is_dir() {
             continue;
         }
-        if let Some(l) = load_layout(&id, &sub, Some(layout_id)) {
+        if let Some(l) = load_layout(&id, &sub, &dir.join(&layout_id).join("ai"), Some(layout_id)) {
             layouts.push(l);
         }
     }

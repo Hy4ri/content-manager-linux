@@ -1,10 +1,13 @@
 //! Small styled building blocks.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use ac_core::ai_line::RacingLine;
 
 use gpui::{
-    AnyElement, BoxShadow, Div, ElementId, FontWeight, ObjectFit, SharedString, Stateful, div, img, point,
-    prelude::*, px, transparent_black,
+    AnyElement, Bounds, BoxShadow, Div, ElementId, FontWeight, ObjectFit, PathBuilder, SharedString, Stateful,
+    canvas, div, fill, img, point, prelude::*, px, size, transparent_black,
 };
 
 use crate::theme;
@@ -35,6 +38,48 @@ pub fn picture(path: Option<PathBuf>, height: f32) -> Div {
                     .object_fit(ObjectFit::Contain),
             )
         })
+}
+
+/// Square track map: the AI racing line drawn as a vector, or `outline.png`
+/// when the layout ships no `fast_lane.ai`.
+pub fn track_map(line: Option<Arc<RacingLine>>, outline: Option<PathBuf>, side: f32) -> Div {
+    let Some(line) = line else {
+        return picture(outline, side).w(px(side));
+    };
+    div().size(px(side)).flex_shrink_0().child(
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                // Keep the 2.5 px stroke and the start dot inside the box.
+                let pad = 6.;
+                let span = f32::from(bounds.size.width.min(bounds.size.height)) - 2. * pad;
+                let at = |p: &[f32; 2]| {
+                    point(
+                        bounds.origin.x + px(pad + p[0] * span),
+                        bounds.origin.y + px(pad + p[1] * span),
+                    )
+                };
+                let mut path = PathBuilder::stroke(px(2.5));
+                path.move_to(at(&line.points[0]));
+                for p in &line.points[1..] {
+                    path.line_to(at(p));
+                }
+                if line.closed {
+                    path.close();
+                }
+                if let Ok(path) = path.build() {
+                    window.paint_path(path, theme::text());
+                }
+                let start = at(&line.points[0]);
+                let d = px(8.);
+                window.paint_quad(
+                    fill(Bounds::new(point(start.x - d / 2., start.y - d / 2.), size(d, d)), theme::accent())
+                        .corner_radii(d / 2.),
+                );
+            },
+        )
+        .size_full(),
+    )
 }
 
 /// Label column + control, so every setting lines up on the same grid.
