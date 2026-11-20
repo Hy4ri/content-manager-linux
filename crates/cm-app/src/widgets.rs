@@ -40,64 +40,26 @@ pub fn picture(path: Option<PathBuf>, height: f32) -> Div {
         })
 }
 
-/// Square track map: the AI racing line drawn as a vector, or `outline.png`
-/// when the layout ships no `fast_lane.ai`.
+/// Square track map: the AI racing line drawn as a vector, or `outline.png` when unavailable.
 pub fn track_map(line: Option<Arc<RacingLine>>, outline: Option<PathBuf>, side: f32) -> Div {
-    let Some(line) = line else {
-        return picture(outline, side).w(px(side));
-    };
-    div().size(px(side)).flex_shrink_0().child(
-        canvas(
-            |_, _, _| {},
-            move |bounds, _, window, _| {
-                // Keep the 2.5 px stroke and the start dot inside the box.
-                let pad = 6.;
-                let span = f32::from(bounds.size.width.min(bounds.size.height)) - 2. * pad;
-                let at = |p: &[f32; 2]| {
-                    point(
-                        bounds.origin.x + px(pad + p[0] * span),
-                        bounds.origin.y + px(pad + p[1] * span),
-                    )
-                };
-                let mut path = PathBuilder::stroke(px(2.5));
-                path.move_to(at(&line.points[0]));
-                for p in &line.points[1..] {
-                    path.line_to(at(p));
-                }
-                if line.closed {
-                    path.close();
-                }
-                if let Ok(path) = path.build() {
-                    window.paint_path(path, theme::text());
-                }
-                let start = at(&line.points[0]);
-                let d = px(8.);
-                window.paint_quad(
-                    fill(Bounds::new(point(start.x - d / 2., start.y - d / 2.), size(d, d)), theme::accent())
-                        .corner_radii(d / 2.),
-                );
-            },
-        )
-        .size_full(),
-    )
+    let Some(line) = line else { return picture(outline, side).w(px(side)); };
+    div().size(px(side)).flex_shrink_0().child(canvas(|_, _, _| {}, move |bounds, _, window, _| {
+        let pad = 6.;
+        let span = f32::from(bounds.size.width.min(bounds.size.height)) - 2. * pad;
+        let at = |p: &[f32; 2]| point(bounds.origin.x + px(pad + p[0] * span), bounds.origin.y + px(pad + p[1] * span));
+        let mut path = PathBuilder::stroke(px(2.5));
+        path.move_to(at(&line.points[0]));
+        for p in &line.points[1..] { path.line_to(at(p)); }
+        if line.closed { path.close(); }
+        if let Ok(path) = path.build() { window.paint_path(path, theme::text()); }
+        let start = at(&line.points[0]); let d = px(8.);
+        window.paint_quad(fill(Bounds::new(point(start.x - d / 2., start.y - d / 2.), size(d, d)), theme::accent()).corner_radii(d / 2.));
+    }).size_full())
 }
 
 /// Label column + control, so every setting lines up on the same grid.
 pub fn setting_row(label: impl Into<SharedString>, control: impl IntoElement) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .min_h(px(28.))
-        .child(
-            div()
-                .w(px(120.))
-                .flex_shrink_0()
-                .text_sm()
-                .text_color(theme::muted())
-                .child(label.into()),
-        )
-        .child(control)
+    div().flex().items_center().gap_2().min_h(px(28.)).child(div().w(px(120.)).flex_shrink_0().text_sm().text_color(theme::muted()).child(label.into())).child(control)
 }
 
 /// Two or more mutually exclusive chips drawn as one control.
@@ -216,17 +178,6 @@ pub fn focus_ring(el: Stateful<Div>, focused: bool) -> Stateful<Div> {
     } else {
         el.border_2().border_color(transparent_black())
     }
-}
-
-/// A card container with surface background, medium corner radius, border, and padding.
-pub fn card(id: impl Into<ElementId>) -> Stateful<Div> {
-    div()
-        .id(id)
-        .bg(theme::surface())
-        .rounded(px(theme::RADIUS_MD))
-        .border_1()
-        .border_color(theme::border())
-        .p_4()
 }
 
 /// Renders a small rounded pill button label (e.g. "A") with associated action text (e.g. "Select").

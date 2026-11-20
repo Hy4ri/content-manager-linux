@@ -5,7 +5,6 @@ use gpui::{Rgba, rgb, rgba};
 // Radius / spacing / sizing constants
 pub const RADIUS_SM: f32 = 6.0;
 pub const RADIUS_MD: f32 = 10.0;
-pub const RADIUS_LG: f32 = 14.0;
 pub const MIN_TARGET_H: f32 = 40.0;
 
 // Base canvas and surface tokens
@@ -42,9 +41,6 @@ pub fn accent() -> Rgba {
 }
 pub fn accent_hover() -> Rgba {
     rgb(0xff5470)
-}
-pub fn accent_press() -> Rgba {
-    rgb(0xd9203f)
 }
 pub fn on_accent() -> Rgba {
     rgb(0x111111)

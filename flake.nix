@@ -3,27 +3,35 @@
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-  outputs = { self, nixpkgs }:
+  outputs =
+    { self, nixpkgs }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" ];
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
       forAll = f: nixpkgs.lib.genAttrs systems (s: f nixpkgs.legacyPackages.${s});
     in
     {
-      packages = forAll (pkgs:
+      packages = forAll (
+        pkgs:
         let
           lib = pkgs.lib;
           cefPlatform = if pkgs.stdenv.hostPlatform.isAarch64 then "linuxarm64" else "linux64";
           cefArchive = {
             type = "minimal";
             name = "cef_binary_151.3.16+gbe1e15d+chromium-151.0.7922.109_${cefPlatform}_minimal.tar.bz2";
-            sha1 = if pkgs.stdenv.hostPlatform.isAarch64 then
-              "f1a82ce3bde5ea4338da5a41e0bcae22265f36f9" else
-              "13042a73aeaf0e853a719d3ddad0751514665bb9";
+            sha1 =
+              if pkgs.stdenv.hostPlatform.isAarch64 then
+                "f1a82ce3bde5ea4338da5a41e0bcae22265f36f9"
+              else
+                "13042a73aeaf0e853a719d3ddad0751514665bb9";
           };
           # Metadata comes from the official CEF index. Fail on ABI drift rather
           # than letting cef-rs download an unpatched runtime during a build.
-          cef-runtime = assert pkgs.cef-binary.version == "151.3.16";
-            pkgs.runCommand "cm-rs-cef-runtime-151.3.16" {} ''
+          cef-runtime =
+            assert pkgs.cef-binary.version == "151.3.16";
+            pkgs.runCommand "cm-rs-cef-runtime-151.3.16" { } ''
               mkdir -p $out
               for entry in ${pkgs.cef-binary}/*; do
                 ln -s "$entry" "$out/$(basename "$entry")"
@@ -80,7 +88,10 @@
 
             cargoLock.lockFile = ./Cargo.lock;
             CEF_PATH = "${cef-runtime}";
-            cargoBuildFlags = [ "-p" "cm-app" ];
+            cargoBuildFlags = [
+              "-p"
+              "cm-app"
+            ];
             doCheck = false;
 
             dontUseCmakeConfigure = true;
@@ -187,32 +198,44 @@
         {
           inherit cm-rs cm-rs-src cef-runtime;
           default = cm-rs;
-        });
+        }
+      );
 
       apps = forAll (pkgs: rec {
         cm-rs = {
           type = "app";
-          program = "${self.packages.${pkgs.system}.cm-rs}/bin/cm-rs";
+          program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.cm-rs}/bin/cm-rs";
         };
         default = cm-rs;
       });
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          inputsFrom = [ self.packages.${pkgs.system}.cm-rs-src ];
+          inputsFrom = [ self.packages.${pkgs.stdenv.hostPlatform.system}.cm-rs-src ];
           packages = with pkgs; [ cargo rustc clippy rustfmt rust-analyzer ];
           # Same dlopen'd libraries as the wrapped binary, so `cargo run` works.
-          LD_LIBRARY_PATH = (pkgs.lib.makeLibraryPath (with pkgs; [
-            vulkan-loader wayland libxkbcommon libx11 libxcb fontconfig freetype
-          ])) + ":${self.packages.${pkgs.system}.cef-runtime}";
-          CEF_PATH = "${self.packages.${pkgs.system}.cef-runtime}";
-          CM_RS_CEF_PATH = "${self.packages.${pkgs.system}.cef-runtime}";
+          LD_LIBRARY_PATH =
+            (pkgs.lib.makeLibraryPath (
+              with pkgs;
+              [
+                vulkan-loader
+                wayland
+                libxkbcommon
+                libx11
+                libxcb
+                fontconfig
+                freetype
+              ]
+            ))
+            + ":${self.packages.${pkgs.stdenv.hostPlatform.system}.cef-runtime}";
+          CEF_PATH = "${self.packages.${pkgs.stdenv.hostPlatform.system}.cef-runtime}";
+          CM_RS_CEF_PATH = "${self.packages.${pkgs.stdenv.hostPlatform.system}.cef-runtime}";
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
         };
       });
 
       overlays.default = final: _prev: {
-        cm-rs = self.packages.${final.system}.cm-rs;
+        cm-rs = self.packages.${final.stdenv.hostPlatform.system}.cm-rs;
       };
 
       formatter = forAll (pkgs: pkgs.nixpkgs-fmt);
