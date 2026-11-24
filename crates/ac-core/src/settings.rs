@@ -9,6 +9,43 @@ use serde::{Deserialize, Serialize};
 
 use crate::race::QuickDrive;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PickerView {
+    GridAuto,
+    Grid3,
+    Grid4,
+    #[default]
+    Grid5,
+    List,
+}
+
+impl PickerView {
+    pub fn is_list(self) -> bool {
+        matches!(self, Self::List)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::GridAuto => "Grid",
+            Self::Grid3 => "Grid · 3",
+            Self::Grid4 => "Grid · 4",
+            Self::Grid5 => "Grid · 5",
+            Self::List => "List",
+        }
+    }
+
+    pub fn id(self) -> usize {
+        match self {
+            Self::GridAuto => 0,
+            Self::Grid3 => 1,
+            Self::Grid4 => 2,
+            Self::Grid5 => 3,
+            Self::List => 4,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -20,6 +57,8 @@ pub struct Settings {
     pub last_quick_drive: Option<QuickDrive>,
     /// Browser archive storage; unset uses the application's XDG cache directory.
     pub download_dir: Option<PathBuf>,
+    pub car_picker_view: PickerView,
+    pub track_picker_view: PickerView,
 }
 
 impl Default for Settings {
@@ -31,6 +70,8 @@ impl Default for Settings {
             proton: None,
             last_quick_drive: None,
             download_dir: None,
+            car_picker_view: PickerView::default(),
+            track_picker_view: PickerView::default(),
         }
     }
 }
