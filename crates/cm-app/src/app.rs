@@ -1774,9 +1774,14 @@ impl CmApp {
             cx.notify();
             return;
         }
-        if matches!(self.page, Page::Career | Page::SpecialEvents) && !matches!(name, "LSHOULDER" | "RSHOULDER" | "LTRIGGER" | "RTRIGGER" | "B") {
-            if let Some(events) = &self.events { events.update(cx, |view, cx| view.pad(name, cx)); }
-            return;
+        if matches!(self.page, Page::Career | Page::SpecialEvents) && !matches!(name, "LSHOULDER" | "RSHOULDER" | "LTRIGGER" | "RTRIGGER") {
+            let handled = self
+                .events
+                .as_ref()
+                .is_some_and(|events| events.update(cx, |view, cx| view.pad(name, cx)));
+            if handled || name != "B" {
+                return;
+            }
         }
         let here = tab_of(self.page);
         match name {
@@ -1913,7 +1918,12 @@ impl CmApp {
                 hints.push(h(NavAction::Back, "Drive"));
                 hints.push(h(NavAction::Primary, "Go!"));
             }
-            Page::Career | Page::SpecialEvents => {
+            Page::Career => {
+                hints.push(h(NavAction::Up, "Move"));
+                hints.push(h(NavAction::Confirm, "Open / Start"));
+                hints.push(h(NavAction::Back, "Back"));
+            }
+            Page::SpecialEvents => {
                 hints.push(h(NavAction::Up, "Move"));
                 hints.push(h(NavAction::Confirm, "Start"));
                 hints.push(h(NavAction::Back, "Back"));

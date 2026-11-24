@@ -21,6 +21,7 @@ pub struct Catalog {
 #[derive(Debug, Clone)]
 pub struct Series {
     pub id: String,
+    pub code: String,
     pub name: String,
     pub description: String,
     pub preview: Option<PathBuf>,
@@ -94,6 +95,71 @@ impl Series {
             self.requires
                 .iter()
                 .all(|req| p.completed_series.contains(req))
+        }
+    }
+
+    pub fn unlocked_in(&self, catalog: &Catalog, p: &Progress) -> bool {
+        if self.requires.is_empty() {
+            return true;
+        }
+        let satisfied = |req: &str| {
+            p.completed_series.contains(req)
+                || catalog
+                    .series
+                    .iter()
+                    .find(|s| s.id == req)
+                    .is_some_and(|s| s.completed(p))
+        };
+        if self.requires_any {
+            self.requires.iter().any(|req| satisfied(req))
+        } else {
+            self.requires.iter().all(|req| satisfied(req))
+        }
+    }
+
+    pub fn event_unlocked(&self, index: usize, catalog: &Catalog, p: &Progress) -> bool {
+        if !self.unlocked_in(catalog, p) || index >= self.events.len() {
+            return false;
+        }
+        if self.championship() && index > 0 {
+            return self
+                .events
+                .get(index - 1)
+                .is_some_and(|prev| p.get(&prev.id).last_position.is_some());
+        }
+        true
+    }
+
+    pub fn goal_summary(&self) -> String {
+        if self.championship() {
+            let mut parts = Vec::new();
+            if self.goal_points > 0 {
+                parts.push(format!("{} pts", self.goal_points));
+            }
+            if self.goal_ranking > 0 {
+                parts.push(format!("Top {}", self.goal_ranking));
+            }
+            if parts.is_empty() {
+                "Championship".into()
+            } else {
+                parts.join(" · ")
+            }
+        } else {
+            let mut parts = Vec::new();
+            if self.goal_medals[0] > 0 {
+                parts.push(format!("{} Bronze", self.goal_medals[0]));
+            }
+            if self.goal_medals[1] > 0 {
+                parts.push(format!("{} Silver", self.goal_medals[1]));
+            }
+            if self.goal_medals[2] > 0 {
+                parts.push(format!("{} Gold", self.goal_medals[2]));
+            }
+            if parts.is_empty() {
+                "Complete events".into()
+            } else {
+                parts.join(" · ")
+            }
         }
     }
 
@@ -734,6 +800,12 @@ fn load_series(dir: &Path) -> Result<Series> {
     let ini =
         IniFile::load(&ini_path).with_context(|| format!("loading {}", ini_path.display()))?;
 
+    let code = ini
+        .get("SERIES", "CODE")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&id)
+        .to_string();
     let name = ini.get("SERIES", "NAME").unwrap_or(&id).to_string();
     let description = crate::content::plain_text(ini.get("SERIES", "DESCRIPTION").unwrap_or(""));
     let preview = {
@@ -745,7 +817,7 @@ fn load_series(dir: &Path) -> Result<Series> {
         .get("SERIES", "REQUIRES")
         .unwrap_or("")
         .split(',')
-        .map(|s| s.trim().to_string())
+        .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
 
@@ -849,6 +921,7 @@ fn load_series(dir: &Path) -> Result<Series> {
     opponents.sort_by(|a, b| natural_cmp(&a.id, &b.id));
     Ok(Series {
         id,
+        code,
         name,
         description,
         preview,
