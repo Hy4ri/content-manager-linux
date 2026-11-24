@@ -91,7 +91,15 @@ cargo build --release -p cm-app
 When you hit **Go!**, the launcher writes `race.ini` into your Proton prefix (`.../pfx/drive_c/users/steamuser/Documents/Assetto Corsa/cfg`) and launches `acs.exe`.
 
 - **On NixOS / Steam runtime hosts**: If `steam-run` is detected on PATH, the game is launched inside `steam-run` with clean library paths.
-- **Gamepad / Wheel in Proton**: Assetto Corsa reads gamepad input via XInput (`INPUT_METHOD=X360`). The launcher ensures Steam's `libSDL2` is available to Wine and sets `PROTON_DISABLE_HIDRAW` so controllers (e.g. DualShock / DualSense) are properly routed through SDL to XInput rather than captured as raw HID devices.
+- **Gamepad / Wheel in Proton**: Assetto Corsa reads gamepad input via XInput (`INPUT_METHOD=X360`). When a valid `libSDL2-2.0.so.0` is found (from active `SteamLinuxRuntime` or system library directories), the launcher exposes it to Wine and sets `PROTON_USE_SDL=1`, `PROTON_EMULATE_STEAMINPUT=1`, and `PROTON_DISABLE_HIDRAW` so controllers (such as DualShock and DualSense) are routed through SDL to XInput instead of being captured as raw HID devices.
+  - **Proton build differences**: `PROTON_USE_SDL` and `PROTON_EMULATE_STEAMINPUT` are supported by CachyOS Proton and GE-Proton. Stock Valve Proton ignores those two variables (it still receives SDL2 and `PROTON_DISABLE_HIDRAW`). Both flags can be toggled under **Settings > App** (or `[proton_input]` in `settings.toml`), and explicit environment variables always take precedence.
+
+### Custom Shaders Patch (CSP) on Proton
+
+When `dwrite.dll` is present in the Assetto Corsa directory, `cm-rs` automatically appends `dwrite=n,b` to `WINEDLLOVERRIDES` (preserving any overrides you already set). Two extra prefix requirements apply on current Proton 10/11 builds with CSP 0.2.11:
+
+- **Wine `dbghelp` symbol lookup bug**: CSP 0.2.11 can fail at startup with `Failed to patch Assetto Corsa` on Proton 10/11 because Wine's builtin `dbghelp` omits public symbols and mislabels linker-folded functions. `cm-rs` does not bundle a third-party `dbghelp` shim. Until Wine or CSP fixes this upstream, use a compatible Proton/CSP combination or install a local `dbghelp.dll` proxy (alongside `dbghelp_wine.dll` and `acs.publics.tsv`) in the prefix's `drive_c/windows/system32`. When that proxy is detected in the prefix, `cm-rs` automatically appends `dbghelp=n,b` to `WINEDLLOVERRIDES`.
+- **Missing Windows fonts in the prefix**: CSP requires `Verdana` and `Segoe UI` in the AC Wine prefix (`.../pfx/drive_c/windows/Fonts`). If CSP exits with a missing-font error, install Microsoft Core Fonts into the prefix (for example with `winetricks corefonts`) and copy any remaining TTFs from Assetto Corsa's `content/fonts` folder.
 
 ---
 
