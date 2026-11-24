@@ -84,6 +84,16 @@ pub fn start(ac_root: &Path, opts: &LaunchOptions) -> Result<Child> {
                 "0x054C/0x05C4,0x054C/0x09CC,0x054C/0x0BA0,0x054C/0x0CE6,0x0DF2,0x057E/0x2009",
             );
         }
+        // Custom Shaders Patch hooks in as `dwrite.dll` next to acs.exe; Wine only
+        // loads it over its builtin with a native-first override (what users set as
+        // the Steam launch option). Keep any overrides the user already passes.
+        if ac_root.join("dwrite.dll").is_file() {
+            let user = std::env::var("WINEDLLOVERRIDES").unwrap_or_default();
+            if !user.split(';').any(|o| o.trim_start().starts_with("dwrite")) {
+                let all = if user.is_empty() { "dwrite=n,b".to_owned() } else { format!("{user};dwrite=n,b") };
+                c.env("WINEDLLOVERRIDES", all);
+            }
+        }
         c
     };
     cmd.current_dir(ac_root).env("SteamAppId", &app_id).env("SteamGameId", &app_id);

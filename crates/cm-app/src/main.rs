@@ -6,6 +6,7 @@ mod browser_types;
 mod browser_view;
 mod cli;
 mod content_sort;
+mod csp_view;
 mod events_view;
 mod mods_view;
 mod nav;
