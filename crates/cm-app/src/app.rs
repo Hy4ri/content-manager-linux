@@ -11,10 +11,10 @@ use ac_core::race::{self, Conditions, Mode, QuickDrive};
 use ac_core::settings::Settings;
 use ac_core::{acd, install, launch, paths};
 use gpui::{
-    ClickEvent, Context, Div, Entity, FocusHandle, FontWeight, KeyDownEvent, ModifiersChangedEvent,
-    MouseMoveEvent,
-    ObjectFit, PathPromptOptions, ScrollStrategy, SharedString, UniformListScrollHandle, Window,
-    div, img, prelude::*, px, uniform_list,
+    BoxShadow, ClickEvent, Context, Div, Entity, FocusHandle, FontWeight, KeyDownEvent,
+    ModifiersChangedEvent, MouseButton, MouseMoveEvent, ObjectFit, PathPromptOptions,
+    ScrollStrategy, SharedString, UniformListScrollHandle, Window, deferred, div, img, point,
+    prelude::*, px, rgba, uniform_list,
 };
 
 use crate::browser_downloads::{download_base_dir, manage_archives};
@@ -243,6 +243,8 @@ pub struct CmApp {
     track_sort: TrackSort,
     car_sort_desc: bool,
     track_sort_desc: bool,
+    sort_menu_open: bool,
+    sort_menu_focus: usize,
 
     mode: ModeKind,
     practice_minutes: u32,
@@ -455,6 +457,8 @@ impl CmApp {
             track_sort: TrackSort::default(),
             car_sort_desc: false,
             track_sort_desc: false,
+            sort_menu_open: false,
+            sort_menu_focus: 0,
             mode,
             practice_minutes,
             laps,
@@ -2035,6 +2039,8 @@ impl CmApp {
         self.picker_cols = cols;
         self.picker_card_w = w;
         self.picker = Some(kind);
+        self.sort_menu_open = false;
+        self.sort_menu_focus = 0;
         let current = if kind == PickerKind::Car { self.car } else { self.track };
         let view = self.picker_view();
         self.picker_focus = current.and_then(|c| view.iter().position(|&i| i == c)).unwrap_or(0);
@@ -2050,19 +2056,48 @@ impl CmApp {
             PickerKind::Track => self.track = Some(ix),
         }
         self.picker = None;
+        self.sort_menu_open = false;
         cx.notify();
     }
 
-    fn cycle_picker_sort(&mut self, cx: &mut Context<Self>) {
+    fn toggle_sort_menu(&mut self, cx: &mut Context<Self>) {
+        if self.sort_menu_open {
+            self.sort_menu_open = false;
+        } else {
+            self.sort_menu_open = true;
+            self.sort_menu_focus = match self.picker {
+                Some(PickerKind::Car) => CarSort::ALL
+                    .iter()
+                    .position(|s| *s == self.car_sort)
+                    .unwrap_or(0),
+                Some(PickerKind::Track) => TrackSort::ALL
+                    .iter()
+                    .position(|s| *s == self.track_sort)
+                    .unwrap_or(0),
+                None => 0,
+            };
+        }
+        cx.notify();
+    }
+
+    fn set_car_sort(&mut self, sort: CarSort, cx: &mut Context<Self>) {
+        self.car_sort = sort;
+        self.picker_focus = 0;
+        self.picker_scroll.scroll_to_item(0, ScrollStrategy::Top);
+        self.refilter(cx);
+    }
+
+    fn set_track_sort(&mut self, sort: TrackSort, cx: &mut Context<Self>) {
+        self.track_sort = sort;
+        self.picker_focus = 0;
+        self.picker_scroll.scroll_to_item(0, ScrollStrategy::Top);
+        self.refilter(cx);
+    }
+
+    fn set_picker_sort_desc(&mut self, desc: bool, cx: &mut Context<Self>) {
         match self.picker {
-            Some(PickerKind::Car) => {
-                let at = CarSort::ALL.iter().position(|s| *s == self.car_sort).unwrap_or(0);
-                self.car_sort = CarSort::ALL[(at + 1) % CarSort::ALL.len()];
-            }
-            Some(PickerKind::Track) => {
-                let at = TrackSort::ALL.iter().position(|s| *s == self.track_sort).unwrap_or(0);
-                self.track_sort = TrackSort::ALL[(at + 1) % TrackSort::ALL.len()];
-            }
+            Some(PickerKind::Car) => self.car_sort_desc = desc,
+            Some(PickerKind::Track) => self.track_sort_desc = desc,
             None => return,
         }
         self.picker_focus = 0;
@@ -2082,6 +2117,7 @@ impl CmApp {
     }
 
     fn open_brand_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sort_menu_open = false;
         let pos = self.selected_brand_pos();
         self.brand_menu_focus = Some(pos);
         self.brand_menu_scroll
@@ -2127,6 +2163,66 @@ impl CmApp {
             return;
         }
         let kind = self.picker.unwrap_or(PickerKind::Car);
+        if self.sort_menu_open {
+            let option_count = if kind == PickerKind::Car {
+                CarSort::ALL.len()
+            } else {
+                TrackSort::ALL.len()
+            };
+            let asc_ix = option_count;
+            let desc_ix = option_count + 1;
+            let desc = if kind == PickerKind::Car {
+                self.car_sort_desc
+            } else {
+                self.track_sort_desc
+            };
+            match name {
+                "DPAD_UP" => {
+                    if self.sort_menu_focus >= asc_ix {
+                        self.sort_menu_focus = option_count.saturating_sub(1);
+                    } else {
+                        self.sort_menu_focus = self.sort_menu_focus.saturating_sub(1);
+                    }
+                }
+                "DPAD_DOWN" => {
+                    if self.sort_menu_focus + 1 < option_count {
+                        self.sort_menu_focus += 1;
+                    } else if self.sort_menu_focus + 1 == option_count {
+                        self.sort_menu_focus = if desc { desc_ix } else { asc_ix };
+                    }
+                }
+                "DPAD_LEFT" if self.sort_menu_focus == desc_ix => {
+                    self.sort_menu_focus = asc_ix;
+                }
+                "DPAD_RIGHT" if self.sort_menu_focus == asc_ix => {
+                    self.sort_menu_focus = desc_ix;
+                }
+                "A" => {
+                    if self.sort_menu_focus < option_count {
+                        match kind {
+                            PickerKind::Car => self.set_car_sort(CarSort::ALL[self.sort_menu_focus], cx),
+                            PickerKind::Track => self.set_track_sort(TrackSort::ALL[self.sort_menu_focus], cx),
+                        }
+                    } else if self.sort_menu_focus == asc_ix {
+                        self.set_picker_sort_desc(false, cx);
+                    } else {
+                        self.set_picker_sort_desc(true, cx);
+                    }
+                }
+                "B" | "X" => self.sort_menu_open = false,
+                "Y" => {
+                    self.sort_menu_open = false;
+                    let input = if kind == PickerKind::Car {
+                        self.car_filter.clone()
+                    } else {
+                        self.track_filter.clone()
+                    };
+                    input.read(cx).focus(window);
+                }
+                _ => {}
+            }
+            return;
+        }
         let len = self.picker_view().len();
         let cols = self.picker_cols.max(1);
         let at = self.picker_focus.min(len.saturating_sub(1));
@@ -2141,12 +2237,15 @@ impl CmApp {
                     self.pick(kind, ix, cx);
                 }
             }
-            "B" => self.picker = None,
+            "B" => {
+                self.sort_menu_open = false;
+                self.picker = None;
+            }
             "Y" => {
                 let input = if kind == PickerKind::Car { self.car_filter.clone() } else { self.track_filter.clone() };
                 input.read(cx).focus(window);
             }
-            "X" => self.cycle_picker_sort(cx),
+            "X" => self.toggle_sort_menu(cx),
             "LTRIGGER" | "RTRIGGER" if kind == PickerKind::Car => self.open_brand_menu(window, cx),
             _ => {}
         }
@@ -2437,7 +2536,7 @@ impl CmApp {
     fn picker_card(&self, pos: usize, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let kind = self.picker.unwrap_or(PickerKind::Car);
         let w = self.picker_card_w;
-        let focused = self.input_device.shows_focus() && self.picker_focus == pos;
+        let focused = self.input_device.shows_focus() && !self.sort_menu_open && self.picker_focus == pos;
         let (ix, title, sub, image, current) = match kind {
             PickerKind::Car => {
                 let ix = self.cars_view[pos];
@@ -2587,6 +2686,149 @@ impl CmApp {
             ))
     }
 
+    /// Compact dropdown menu anchored to the picker's Sort button.
+    fn sort_menu(&self, cars: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let shows = self.input_device.shows_focus();
+        let desc = if cars { self.car_sort_desc } else { self.track_sort_desc };
+        let option_count = if cars { CarSort::ALL.len() } else { TrackSort::ALL.len() };
+        let asc_ix = option_count;
+        let desc_ix = option_count + 1;
+
+        let mut list = div().flex().flex_col().gap_0p5();
+        if cars {
+            for (i, &opt) in CarSort::ALL.iter().enumerate() {
+                let active = self.car_sort == opt;
+                let row = div()
+                    .id(("sort-opt", i))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_2()
+                    .py_0p5()
+                    .rounded(px(theme::RADIUS_SM))
+                    .text_sm()
+                    .cursor_pointer()
+                    .when(active, |d| {
+                        d.bg(theme::overlay())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                    })
+                    .when(!active, |d| {
+                        d.text_color(theme::muted())
+                            .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
+                    })
+                    .child(opt.label())
+                    .when(active, |d| {
+                        d.child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme::accent())
+                                .child("✓"),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_car_sort(opt, cx)));
+                list = list.child(focus_ring(row, shows && self.sort_menu_focus == i));
+            }
+        } else {
+            for (i, &opt) in TrackSort::ALL.iter().enumerate() {
+                let active = self.track_sort == opt;
+                let row = div()
+                    .id(("sort-opt", i))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_2()
+                    .py_0p5()
+                    .rounded(px(theme::RADIUS_SM))
+                    .text_sm()
+                    .cursor_pointer()
+                    .when(active, |d| {
+                        d.bg(theme::overlay())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                    })
+                    .when(!active, |d| {
+                        d.text_color(theme::muted())
+                            .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
+                    })
+                    .child(opt.label())
+                    .when(active, |d| {
+                        d.child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme::accent())
+                                .child("✓"),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_track_sort(opt, cx)));
+                list = list.child(focus_ring(row, shows && self.sort_menu_focus == i));
+            }
+        }
+
+        let dir_btn = |id: &'static str, label: &'static str, active: bool, target_desc: bool, focus_ix: usize| {
+            let btn = div()
+                .id(id)
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .py_1()
+                .px_2()
+                .rounded(px(theme::RADIUS_SM))
+                .text_xs()
+                .whitespace_nowrap()
+                .cursor_pointer()
+                .when(active, |d| {
+                    d.bg(theme::accent())
+                        .text_color(theme::on_accent())
+                        .font_weight(FontWeight::BOLD)
+                })
+                .when(!active, |d| {
+                    d.bg(theme::raised())
+                        .text_color(theme::muted())
+                        .hover(|s| s.bg(theme::overlay()).text_color(theme::text()))
+                })
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| this.set_picker_sort_desc(target_desc, cx)));
+            focus_ring(btn, shows && self.sort_menu_focus == focus_ix)
+        };
+
+        div()
+            .id("sort-menu")
+            .absolute()
+            .top_full()
+            .right_0()
+            .mt_1()
+            .w(px(232.))
+            .p_1p5()
+            .rounded(px(theme::RADIUS_SM))
+            .bg(theme::surface())
+            .border_1()
+            .border_color(theme::border())
+            .shadow(vec![BoxShadow {
+                color: rgba(0x00000099).into(),
+                offset: point(px(0.), px(6.)),
+                blur_radius: px(16.),
+                spread_radius: px(0.),
+            }])
+            .flex()
+            .flex_col()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(list)
+            .child(div().h(px(1.)).my_1p5().bg(theme::border()))
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .child(dir_btn("sort-dir-asc", "↑ Ascending", !desc, false, asc_ix))
+                    .child(dir_btn("sort-dir-desc", "↓ Descending", desc, true, desc_ix)),
+            )
+            .into_any_element()
+    }
+
     /// Full-screen car/track picker: search, sort, brand filter and a grid of cards.
     fn picker_sheet(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let kind = self.picker.unwrap_or(PickerKind::Car);
@@ -2639,16 +2881,28 @@ impl CmApp {
             .px_6()
             .into_any_element()
         };
-        let mut hints = vec![
-            hint(dev.label(NavAction::Confirm), "Pick"),
-            hint(dev.label(NavAction::Back), "Close"),
-            hint(dev.label(NavAction::Search), "Search"),
-            hint(dev.label(NavAction::Secondary), "Sort"),
-        ];
-        if cars {
-            hints.push(hint(&format!("{}/{}", dev.label(NavAction::SubPrev), dev.label(NavAction::SubNext)), "Brand"));
-        }
+        let hints = if self.sort_menu_open {
+            vec![
+                hint(dev.label(NavAction::Confirm), "Select"),
+                hint(dev.label(NavAction::Back), "Close menu"),
+            ]
+        } else {
+            let mut h = vec![
+                hint(dev.label(NavAction::Confirm), "Pick"),
+                hint(dev.label(NavAction::Back), "Close"),
+                hint(dev.label(NavAction::Search), "Search"),
+                hint(dev.label(NavAction::Secondary), "Sort"),
+            ];
+            if cars {
+                h.push(hint(
+                    &format!("{}/{}", dev.label(NavAction::SubPrev), dev.label(NavAction::SubNext)),
+                    "Brand",
+                ));
+            }
+            h
+        };
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -2667,8 +2921,19 @@ impl CmApp {
                     .child(div().text_sm().text_color(theme::muted()).child(counter))
                     .child(div().flex_1())
                     .child(
-                        button("pick-sort", format!("Sort: {sort_label} {}", if desc { "↓" } else { "↑" }))
-                            .on_click(cx.listener(|this, _, _, cx| this.cycle_picker_sort(cx))),
+                        div()
+                            .relative()
+                            .child(
+                                button(
+                                    "pick-sort",
+                                    format!("Sort: {sort_label} {}", if desc { "↓" } else { "↑" }),
+                                )
+                                .when(self.sort_menu_open, |d| d.border_color(theme::accent()))
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_sort_menu(cx))),
+                            )
+                            .when(self.sort_menu_open, |d| {
+                                d.child(deferred(self.sort_menu(cars, cx)).with_priority(1))
+                            }),
                     )
                     .when(cars, |d| {
                         d.child(
@@ -2677,6 +2942,7 @@ impl CmApp {
                         )
                     })
                     .child(button("pick-close", "Close").on_click(cx.listener(|this, _, _, cx| {
+                        this.sort_menu_open = false;
                         this.picker = None;
                         cx.notify();
                     }))),
@@ -2684,6 +2950,23 @@ impl CmApp {
             .child(div().h(px(12.)).flex_shrink_0())
             .child(body)
             .child(hint_bar(hints, None))
+            .when(self.sort_menu_open, |d| {
+                d.child(
+                    div()
+                        .id("sort-menu-backdrop")
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.sort_menu_open = false;
+                                cx.stop_propagation();
+                                cx.notify();
+                            }),
+                        ),
+                )
+            })
             .into_any_element()
     }
 
