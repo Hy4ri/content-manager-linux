@@ -820,7 +820,7 @@ impl Render for ModsView {
                             .text_sm()
                             .text_color(theme::muted())
                             .child(
-                                "Cars and tracks installed from .zip archives or added to your Assetto Corsa content folder appear here. You can disable, open, or delete them individually.",
+                                "Cars and tracks installed from .zip, .7z or .rar archives or added to your Assetto Corsa content folder appear here. You can disable, open, or delete them individually.",
                             ),
                     )
                     .child(
