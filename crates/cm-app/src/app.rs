@@ -870,9 +870,9 @@ impl CmApp {
         }
         self.download_working = true;
         self.download_usage = if clear {
-            "Clearing ZIPs…"
+            "Clearing archives…"
         } else {
-            "Measuring ZIPs…"
+            "Measuring archives…"
         }
         .into();
         cx.notify();
@@ -886,17 +886,17 @@ impl CmApp {
                 this.download_working = false;
                 match result {
                     Ok((removed, (count, bytes))) => {
-                        this.download_usage = format!("{count} ZIP files · {}", crate::browser_view::format_bytes(bytes as i64));
+                        this.download_usage = format!("{count} archives · {}", crate::browser_view::format_bytes(bytes as i64));
                         if let Some((count, bytes)) = removed {
                             // A preview of a removed archive is no longer installable.
                             this.install = None;
-                            this.set_status(format!("Cleared {count} ZIP files ({}). Installed mods were not touched.", crate::browser_view::format_bytes(bytes as i64)), false, cx);
+                            this.set_status(format!("Cleared {count} archives ({}). Installed mods were not touched.", crate::browser_view::format_bytes(bytes as i64)), false, cx);
                         }
                     }
                     Err(error) => {
                         this.download_usage = format!("Could not read download storage: {error}");
                         if clear {
-                            this.set_status(format!("Could not finish clearing ZIPs: {error}. Some files may already have been removed."), true, cx);
+                            this.set_status(format!("Could not finish clearing archives: {error}. Some files may already have been removed."), true, cx);
                         }
                     }
                 }
@@ -1053,7 +1053,7 @@ impl CmApp {
             let planned_root = root.clone();
             let plan = cx
                 .background_executor()
-                .spawn(async move { install::plan_zip(&a, &planned_root) })
+                .spawn(async move { install::plan(&a, &planned_root) })
                 .await;
             this.update(cx, |this, cx| {
                 if this.install_generation != generation
@@ -1088,7 +1088,7 @@ impl CmApp {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Select a mod archive (.zip)".into()),
+            prompt: Some("Select a mod archive (.zip, .7z or .rar)".into()),
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else {
@@ -1129,7 +1129,7 @@ impl CmApp {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let files = install::install_zip(&archive, &items)?;
+                    let files = install::install(&archive, &items)?;
                     let manifest_warn = ac_core::mods::record_install(&root, &archive, &items).err();
                     Ok::<_, anyhow::Error>((files, manifest_warn))
                 })
@@ -3945,7 +3945,7 @@ impl CmApp {
             .max_w(px(INSTALL_MAX_W))
             .child(div().text_xl().font_weight(FontWeight::BOLD).child("Install mods"))
             .child(div().w(px(text_w)).text_sm().text_color(theme::muted()).child(
-                "Pick a .zip with cars or tracks. Folders are found by ui_car.json, data.acd or ui_track.json, \
+                "Pick a .zip, .7z or .rar with cars or tracks. Folders are found by ui_car.json, data.acd or ui_track.json, \
                  wherever they sit in the archive.",
             ))
             .child(div().w(px(text_w)).text_sm().text_color(theme::muted()).child(dest))
@@ -4146,13 +4146,13 @@ impl CmApp {
                     .when(self.download_working, |d| d.opacity(0.5))))
             .child(info("Current download directory", download_base_dir(self.settings.download_dir.as_deref()).display().to_string()))
             .child(div().w(px(text_w - PANEL_INSET)).text_xs().text_color(theme::muted())
-                .child("Folder changes apply to new downloads only. Existing ZIPs are not moved. Size and cleanup cover cm-rs ZIP downloads only; active downloads are skipped."))
+                .child("Folder changes apply to new downloads only. Existing archives are not moved. Size and cleanup cover cm-rs archive downloads (.zip, .7z, .rar) only; active downloads are skipped."))
             .child(div().flex().items_center().gap_2()
                 .child(div().text_sm().child(self.download_usage.clone()))
                 .child(button("refresh-download-size", "Refresh")
                     .when(!self.download_working, |d| d.on_click(cx.listener(|this, _, _, cx| this.refresh_download_usage(cx))))
                     .when(self.download_working, |d| d.opacity(0.5)))
-                .child(button("clear-downloads", "Clear ZIP files…")
+                .child(button("clear-downloads", "Clear archives…")
                     .when(!self.download_working && !self.busy, |d| d.on_click(cx.listener(|this, _, _, cx| {
                         this.clear_download_confirm = Some(download_base_dir(this.settings.download_dir.as_deref()));
                         cx.notify();
@@ -4161,9 +4161,9 @@ impl CmApp {
             .when_some(self.clear_download_confirm.as_ref(), |d, path| {
                 d.child(div().flex().flex_col().gap_2()
                     .child(div().w(px(text_w - PANEL_INSET)).text_sm().text_color(theme::accent())
-                        .child(format!("Permanently delete the downloaded ZIP files in {}? Installed cars, tracks and other mods will NOT be deleted. Unrelated files and active downloads are kept. This cannot be undone.", path.display())))
+                        .child(format!("Permanently delete the downloaded .zip, .7z and .rar archives in {}? Installed cars, tracks and other mods will NOT be deleted. Unrelated files and active downloads are kept. This cannot be undone.", path.display())))
                     .child(div().flex().gap_2()
-                        .child(button("confirm-clear-downloads", "Delete downloaded ZIPs")
+                        .child(button("confirm-clear-downloads", "Delete downloaded archives")
                             .when(!self.download_working && !self.busy, |d| d.on_click(cx.listener(|this, _, _, cx| this.run_download_maintenance(true, cx)))))
                         .child(button("cancel-clear-downloads", "Cancel").on_click(cx.listener(|this, _, _, cx| {
                             this.clear_download_confirm = None;

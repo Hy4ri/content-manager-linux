@@ -13,6 +13,8 @@ toml.workspace = true
 tempfile.workspace = true
 dirs.workspace = true
 zip.workspace = true
+sevenz-rust2.workspace = true
+unrar.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

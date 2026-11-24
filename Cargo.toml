@@ -15,6 +15,8 @@ toml = "0.8.23"
 tempfile = "3"
 dirs = "6"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+sevenz-rust2 = { version = "0.25", default-features = false, features = ["bzip2", "deflate", "ppmd"] }
+unrar = "0.5.8"
 gpui = "0.2.2"
 unicode-segmentation = "1"
 

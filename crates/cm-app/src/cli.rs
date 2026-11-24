@@ -12,7 +12,7 @@ With no command, opens the GUI.
   acd unpack <data.acd> [out_dir]   decrypt data.acd (default: <car>/data)
   acd pack <data_dir> [data.acd]    encrypt a data folder (default: <car>/data.acd)
   list cars|tracks|events [ac_root]        list installed content
-  install <mod.zip> [ac_root]       install cars/tracks from a zip
+  install <mod.zip|7z|rar> [ac_root] install cars/tracks from an archive
   where                             show detected paths";
 
 fn root(arg: Option<&&str>) -> anyhow::Result<PathBuf> {
@@ -82,11 +82,11 @@ fn run_inner(args: &[String]) -> anyhow::Result<()> {
         ["install", zip, rest @ ..] => {
             let r = root(rest.first())?;
             let zip = Path::new(zip);
-            let items = install::plan_zip(zip, &r)?;
+            let items = install::plan(zip, &r)?;
             for i in &items {
                 println!("{:?} {} -> {}{}", i.kind, i.id, i.target.display(), if i.exists { " (update)" } else { "" });
             }
-            let n = install::install_zip(zip, &items)?;
+            let n = install::install(zip, &items)?;
             if let Err(e) = ac_core::mods::record_install(&r, zip, &items) {
                 eprintln!("warning: couldn't update mod manifest: {e:#}");
             }

@@ -26,7 +26,7 @@ pub fn finish_download(path: &Path) {
     }
 }
 
-/// Only direct ZIP files in cm-rs's uniquely named download folders are managed.
+/// Only direct mod archives (.zip, .7z, .rar) in cm-rs's uniquely named download folders are managed.
 /// Never recurse into arbitrary folders or follow symlinks, even in a shared directory.
 fn archive_paths(base: &Path) -> std::io::Result<Vec<PathBuf>> {
     let entries = match std::fs::read_dir(base) {
@@ -54,7 +54,11 @@ fn archive_paths(base: &Path) -> std::io::Result<Vec<PathBuf>> {
                 && file
                     .path()
                     .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+                    .is_some_and(|ext| {
+                        ["zip", "7z", "rar"]
+                            .iter()
+                            .any(|known| ext.eq_ignore_ascii_case(known))
+                    })
             {
                 paths.push(file.path());
             }
@@ -63,8 +67,8 @@ fn archive_paths(base: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Returns the number and size of downloaded ZIPs (not installed content).
-/// When clearing, active downloads and all non-ZIP files are left alone.
+/// Returns the number and size of downloaded archives (not installed content).
+/// When clearing, active downloads and all non-archive files are left alone.
 pub fn manage_archives(base: &Path, clear: bool) -> std::io::Result<(usize, u64)> {
     let active = ACTIVE_DOWNLOADS
         .lock()
@@ -75,7 +79,7 @@ pub fn manage_archives(base: &Path, clear: bool) -> std::io::Result<(usize, u64)
         if active.contains(&path) {
             continue;
         }
-        // Recheck the leaf before deleting; never follow a ZIP symlink.
+        // Recheck the leaf before deleting; never follow an archive symlink.
         let metadata = std::fs::symlink_metadata(&path)?;
         if !metadata.is_file() {
             continue;
