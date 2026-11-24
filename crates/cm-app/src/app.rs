@@ -488,12 +488,12 @@ impl CmApp {
         };
 
         let last_car_grid = if settings.car_picker_view.is_list() {
-            PickerView::GridAuto
+            PickerView::default()
         } else {
             settings.car_picker_view
         };
         let last_track_grid = if settings.track_picker_view.is_list() {
-            PickerView::GridAuto
+            PickerView::default()
         } else {
             settings.track_picker_view
         };
@@ -2323,10 +2323,10 @@ impl CmApp {
                 PickerView::Grid4 => 4,
                 PickerView::Grid5 => 5,
                 PickerView::List => match last_grid {
+                    PickerView::GridAuto => 2,
                     PickerView::Grid3 => 3,
                     PickerView::Grid4 => 4,
-                    PickerView::Grid5 => 5,
-                    _ => 2,
+                    _ => 5,
                 },
             };
             match name {

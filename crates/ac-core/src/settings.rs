@@ -12,10 +12,10 @@ use crate::race::QuickDrive;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PickerView {
-    #[default]
     GridAuto,
     Grid3,
     Grid4,
+    #[default]
     Grid5,
     List,
 }
