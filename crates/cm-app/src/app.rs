@@ -22,6 +22,7 @@ use crate::browser_tabs::BrowserTabs as BrowserView;
 use crate::browser_view::PreviewDownload;
 use crate::content_sort::{CarSort, TrackSort};
 use crate::events_view::{EventsView, Running};
+use crate::mods_view::{ModsChanged, ModsNavigate, ModsTarget, ModsView};
 use crate::nav::NavAction;
 use crate::text_input::TextInput;
 use crate::theme;
@@ -38,6 +39,7 @@ enum Page {
     Career,
     SpecialEvents,
     Install,
+    InstalledMods,
     Browser,
     Game,
     Settings,
@@ -51,7 +53,7 @@ const TABS: [(&str, &[Page]); 7] = [
     ("Tracks", &[Page::Tracks]),
     ("Career", &[Page::Career]),
     ("Events", &[Page::SpecialEvents]),
-    ("Mods", &[Page::Browser, Page::Install]),
+    ("Mods", &[Page::Browser, Page::Install, Page::InstalledMods]),
     ("Settings", &[Page::Game, Page::Settings]),
 ];
 
@@ -59,6 +61,7 @@ fn page_label(page: Page) -> &'static str {
     match page {
         Page::Browser => "Get mods",
         Page::Install => "Install",
+        Page::InstalledMods => "Installed",
         Page::Game => "Game",
         Page::Settings => "App",
         Page::QuickDrive => "Drive",
@@ -273,6 +276,7 @@ pub struct CmApp {
     page: Page,
     browser: Option<Entity<BrowserView>>,
     events: Option<Entity<EventsView>>,
+    mods_view: Option<Entity<ModsView>>,
 
     car: Option<usize>,
     skin: usize,
@@ -505,6 +509,7 @@ impl CmApp {
             },
             browser: None,
             events: None,
+            mods_view: None,
             settings,
             ac_root,
             content: Arc::default(),
@@ -838,6 +843,7 @@ impl CmApp {
         self.ac_root = Some(root);
         if changed {
             self.game_cfg = None;
+            self.mods_view = None;
         }
         self.set_status("Settings saved.", false, cx);
         if changed {
@@ -1118,21 +1124,29 @@ impl CmApp {
         self.busy = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let InstallState { archive, items, .. } = state;
+            let InstallState { root, archive, items } = state;
             let n = items.len();
             let result = cx
                 .background_executor()
-                .spawn(async move { install::install_zip(&archive, &items) })
+                .spawn(async move {
+                    let files = install::install_zip(&archive, &items)?;
+                    let manifest_warn = ac_core::mods::record_install(&root, &archive, &items).err();
+                    Ok::<_, anyhow::Error>((files, manifest_warn))
+                })
                 .await;
             this.update(cx, |this, cx| {
                 this.busy = false;
                 match result {
-                    Ok(files) => {
-                        this.set_status(
-                            format!("Installed {n} item(s), {files} files."),
-                            false,
-                            cx,
-                        );
+                    Ok((files, manifest_warn)) => {
+                        let msg = if let Some(err) = manifest_warn {
+                            format!("Installed {n} item(s), {files} files (manifest warning: {err:#}).")
+                        } else {
+                            format!("Installed {n} item(s), {files} files.")
+                        };
+                        this.set_status(msg, false, cx);
+                        if let Some(mods_view) = &this.mods_view {
+                            mods_view.update(cx, |view, cx| view.refresh(cx));
+                        }
                         this.reload(cx);
                     }
                     Err(e) => this.set_status(format!("Install failed: {e:#}"), true, cx),
@@ -1783,9 +1797,40 @@ impl CmApp {
         }
     }
 
+    fn ensure_mods(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.ac_root.clone() else {
+            return;
+        };
+        if self.mods_view.as_ref().is_some_and(|m| m.read(cx).root != root) {
+            self.mods_view = None;
+        }
+        if self.mods_view.is_none() {
+            let view = cx.new(|cx| ModsView::new(root, cx));
+            cx.subscribe(&view, |this, _, _: &ModsChanged, cx| {
+                this.reload(cx);
+            })
+            .detach();
+            cx.subscribe_in(&view, window, |this, _, event: &ModsNavigate, window, cx| {
+                let target = match event.0 {
+                    ModsTarget::Browser => Page::Browser,
+                    ModsTarget::Install => Page::Install,
+                };
+                this.goto_page(target, window, cx);
+            })
+            .detach();
+            view.update(cx, |v, cx| v.set_input_device(self.input_device, cx));
+            self.mods_view = Some(view);
+        } else if let Some(view) = &self.mods_view {
+            view.update(cx, |v, cx| v.set_input_device(self.input_device, cx));
+        }
+    }
+
     fn goto_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(page, Page::Career | Page::SpecialEvents) {
             self.ensure_events(page == Page::Career, cx);
+        }
+        if page == Page::InstalledMods {
+            self.ensure_mods(window, cx);
         }
         if page == Page::Browser {
             self.ensure_browser(window, cx);
@@ -1855,6 +1900,21 @@ impl CmApp {
                 .events
                 .as_ref()
                 .is_some_and(|events| events.update(cx, |view, cx| view.pad(name, cx)));
+            if handled || name != "B" {
+                return;
+            }
+        }
+        if self.page == Page::InstalledMods && !matches!(name, "LSHOULDER" | "RSHOULDER" | "LTRIGGER" | "RTRIGGER") {
+            let device = self.input_device;
+            let handled = self
+                .mods_view
+                .as_ref()
+                .is_some_and(|mods| {
+                    mods.update(cx, |view, cx| {
+                        view.set_input_device(device, cx);
+                        view.pad(name, cx)
+                    })
+                });
             if handled || name != "B" {
                 return;
             }
@@ -2002,6 +2062,14 @@ impl CmApp {
             Page::SpecialEvents => {
                 hints.push(h(NavAction::Up, "Move"));
                 hints.push(h(NavAction::Confirm, "Start"));
+                hints.push(h(NavAction::Back, "Back"));
+            }
+            Page::InstalledMods => {
+                hints.push(h(NavAction::SubPrev, "Prev page"));
+                hints.push(h(NavAction::SubNext, "Next page"));
+                hints.push(h(NavAction::Up, "Move"));
+                hints.push(h(NavAction::Confirm, "Enable / Disable"));
+                hints.push(h(NavAction::Secondary, "Open folder"));
                 hints.push(h(NavAction::Back, "Back"));
             }
             Page::Install | Page::Game | Page::Settings => {
@@ -4177,6 +4245,18 @@ impl Render for CmApp {
                 Page::Install => self
                     .install_page(text_w(main_w, INSTALL_MAX_W), cx)
                     .into_any_element(),
+                Page::InstalledMods => {
+                    if let Some(mods_view) = &self.mods_view {
+                        div().size_full().child(mods_view.clone()).into_any_element()
+                    } else {
+                        div()
+                            .p_4()
+                            .text_sm()
+                            .text_color(theme::muted())
+                            .child("Set your Assetto Corsa folder in Settings to manage installed mods.")
+                            .into_any_element()
+                    }
+                }
                 Page::Browser => div()
                     .size_full()
                     .children(self.browser.clone())
@@ -4209,6 +4289,9 @@ impl Render for CmApp {
             .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, _, cx| {
                 if this.input_device != crate::nav::InputDevice::Mouse {
                     this.input_device = crate::nav::InputDevice::Mouse;
+                    if let Some(mods_view) = &this.mods_view {
+                        mods_view.update(cx, |v, cx| v.set_input_device(crate::nav::InputDevice::Mouse, cx));
+                    }
                     cx.notify();
                 }
             }))

@@ -7,6 +7,7 @@ mod browser_view;
 mod cli;
 mod content_sort;
 mod events_view;
+mod mods_view;
 mod nav;
 mod text_input;
 mod theme;
