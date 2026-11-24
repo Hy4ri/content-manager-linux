@@ -87,6 +87,9 @@ fn run_inner(args: &[String]) -> anyhow::Result<()> {
                 println!("{:?} {} -> {}{}", i.kind, i.id, i.target.display(), if i.exists { " (update)" } else { "" });
             }
             let n = install::install_zip(zip, &items)?;
+            if let Err(e) = ac_core::mods::record_install(&r, zip, &items) {
+                eprintln!("warning: couldn't update mod manifest: {e:#}");
+            }
             println!("wrote {n} files");
         }
         ["where"] => {
