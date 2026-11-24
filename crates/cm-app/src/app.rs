@@ -792,6 +792,7 @@ impl CmApp {
         }
         let opts = launch::LaunchOptions {
             proton: self.settings.proton.clone(),
+            input: self.settings.proton_input.clone(),
         };
         match launch::start(&root, &opts) {
             Ok(mut child) => {
@@ -1791,7 +1792,8 @@ impl CmApp {
             let driver = self.settings.driver_name.clone();
             let nationality = self.settings.nationality.clone();
             let proton = self.settings.proton.clone();
-            let view = cx.new(|cx| EventsView::new(root, career, driver, nationality, proton, cx));
+            let proton_input = self.settings.proton_input.clone();
+            let view = cx.new(|cx| EventsView::new(root, career, driver, nationality, proton, proton_input, cx));
             cx.subscribe(&view, |this, _, event: &Running, cx| {
                 this.game_running = event.0;
                 cx.notify();
@@ -1799,7 +1801,7 @@ impl CmApp {
             view.update(cx, |view, cx| view.set_running(self.game_running, cx));
             self.events = Some(view);
         } else if let Some(view) = &self.events {
-            view.update(cx, |view, cx| view.configure(career, self.settings.driver_name.clone(), self.settings.nationality.clone(), self.settings.proton.clone(), cx));
+            view.update(cx, |view, cx| view.configure(career, self.settings.driver_name.clone(), self.settings.nationality.clone(), self.settings.proton.clone(), self.settings.proton_input.clone(), cx));
         }
     }
 
@@ -4121,6 +4123,7 @@ impl CmApp {
         };
         let hint = |text: &'static str| {
             div()
+                .w(px(text_w - PANEL_INSET))
                 .pl(px(LABEL_W + 12.))
                 .text_xs()
                 .text_color(theme::muted())
@@ -4158,12 +4161,50 @@ impl CmApp {
                     .into_any_element(),
             ))
             .when(!cfg!(windows), |d| {
+                let use_sdl = self.settings.proton_input.use_sdl;
+                let emulate = self.settings.proton_input.emulate_steam_input;
                 d.child(row(
                     "Proton script",
                     grow_input(self.in_proton.clone()).into_any_element(),
                 ))
                 .child(hint(
                     "Leave empty to use the last Proton recorded in the prefix (shown below).",
+                ))
+                .child(row(
+                    "Controller input",
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            chip("proton-use-sdl", "Use SDL", use_sdl).on_click(cx.listener(
+                                |this, _, _, cx| {
+                                    this.settings.proton_input.use_sdl =
+                                        !this.settings.proton_input.use_sdl;
+                                    cx.notify();
+                                },
+                            )),
+                        )
+                        .child(
+                            chip(
+                                "proton-emulate-steam-input",
+                                "Emulate Steam Input",
+                                use_sdl && emulate,
+                            )
+                            .when(!use_sdl, |c| c.opacity(0.45))
+                            .when(use_sdl, |c| {
+                                c.on_click(cx.listener(|this, _, _, cx| {
+                                    this.settings.proton_input.emulate_steam_input =
+                                        !this.settings.proton_input.emulate_steam_input;
+                                    cx.notify();
+                                }))
+                            }),
+                        )
+                        .into_any_element(),
+                ))
+                .child(hint(
+                    "Sets PROTON_USE_SDL and PROTON_EMULATE_STEAMINPUT when SDL2 is available. Explicit env vars override these.",
                 ))
             });
 

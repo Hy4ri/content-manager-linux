@@ -46,6 +46,27 @@ impl PickerView {
     }
 }
 
+/// Linux Proton gamepad input flags. Explicit environment variables always
+/// take precedence over these settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProtonInputSettings {
+    /// Set `PROTON_USE_SDL=1` when a valid SDL2 library is available.
+    pub use_sdl: bool,
+    /// Set `PROTON_EMULATE_STEAMINPUT=1` (requires `use_sdl`) so Proton
+    /// exposes the SDL controller as an Xbox 360 XInput pad to Assetto Corsa.
+    pub emulate_steam_input: bool,
+}
+
+impl Default for ProtonInputSettings {
+    fn default() -> Self {
+        Self {
+            use_sdl: true,
+            emulate_steam_input: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -54,6 +75,8 @@ pub struct Settings {
     pub nationality: String,
     /// Linux: explicit `proton` script; auto-detected when unset.
     pub proton: Option<PathBuf>,
+    /// Linux: Proton gamepad input flags.
+    pub proton_input: ProtonInputSettings,
     pub last_quick_drive: Option<QuickDrive>,
     /// Browser archive storage; unset uses the application's XDG cache directory.
     pub download_dir: Option<PathBuf>,
@@ -68,6 +91,7 @@ impl Default for Settings {
             driver_name: "Player".into(),
             nationality: "ITA".into(),
             proton: None,
+            proton_input: ProtonInputSettings::default(),
             last_quick_drive: None,
             download_dir: None,
             car_picker_view: PickerView::default(),
