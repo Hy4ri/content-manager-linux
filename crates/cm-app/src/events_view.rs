@@ -105,6 +105,7 @@ pub struct EventsView {
     driver: String,
     nationality: String,
     proton: Option<PathBuf>,
+    proton_input: ac_core::settings::ProtonInputSettings,
 }
 
 fn medal(n: u8) -> &'static str {
@@ -232,6 +233,7 @@ impl EventsView {
         driver: String,
         nationality: String,
         proton: Option<PathBuf>,
+        proton_input: ac_core::settings::ProtonInputSettings,
         cx: &mut Context<Self>,
     ) -> Self {
         let search = cx.new(|cx| TextInput::new(cx, "Search events, cars, tracks…", ""));
@@ -265,6 +267,7 @@ impl EventsView {
             driver,
             nationality,
             proton,
+            proton_input,
         };
         view.reload(cx);
         view
@@ -276,6 +279,7 @@ impl EventsView {
         driver: String,
         nationality: String,
         proton: Option<PathBuf>,
+        proton_input: ac_core::settings::ProtonInputSettings,
         cx: &mut Context<Self>,
     ) {
         self.restart_confirm = false;
@@ -284,6 +288,7 @@ impl EventsView {
         self.driver = driver;
         self.nationality = nationality;
         self.proton = proton;
+        self.proton_input = proton_input;
         if mode_changed {
             self.message = None;
             if career {
@@ -657,6 +662,7 @@ impl EventsView {
             &root,
             &launch::LaunchOptions {
                 proton: self.proton.clone(),
+                input: self.proton_input.clone(),
             },
         ) {
             Err(e) => {

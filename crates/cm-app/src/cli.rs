@@ -102,6 +102,7 @@ fn run_inner(args: &[String]) -> anyhow::Result<()> {
                 println!("compatdata:  {:?}", paths::compat_data_dir(&r));
                 println!("proton:      {:?}", ac_core::launch::find_proton(&r));
                 println!("steam-run:   {:?}", ac_core::launch::find_steam_run());
+                println!("sdl2 dirs:   {:?}", paths::steam_sdl_lib_dirs());
                 println!("settings:    {:?}", ac_core::settings::path());
             }
         }
