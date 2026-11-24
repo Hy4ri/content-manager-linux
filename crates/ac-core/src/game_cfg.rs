@@ -252,14 +252,31 @@ pub fn pad_label(name: &str) -> &str {
     PAD_BUTTONS.iter().find(|(n, _)| *n == name).map(|(_, l)| *l).unwrap_or(name)
 }
 
+/// Sections whose `XBOXBUTTON` AC's X360 controller reads: the exact list it loads in
+/// `acs.exe` (and the list Content Manager offers for pads). Anything else is keyboard-only.
+const PAD_SECTIONS: &[&str] = &[
+    "GEARUP", "GEARDN", "HANDBRAKE", "GLANCELEFT", "GLANCERIGHT", "GLANCEBACK", "ACTION_CHANGE_CAMERA",
+    "ACTION_HEADLIGHTS", "ACTION_HORN", "BALANCEDN", "BALANCEUP", "KERS", "DRS", "ACTION_HEADLIGHTS_FLASH",
+    "ABSDN", "ABSUP", "TCDN", "TCUP", "TURBODN", "TURBOUP", "ENGINE_BRAKE_UP", "ENGINE_BRAKE_DN",
+    "MGUK_DELIVERY_UP", "MGUK_DELIVERY_DN", "MGUK_RECOVERY_UP", "MGUK_RECOVERY_DN", "MGUH_MODE",
+];
+
 impl Bind {
-    /// Throttle, brake and steering are analog on a pad: R2, L2 and the left stick.
-    pub fn pad_axis(&self) -> Option<&'static str> {
-        (self.section == "KEYBOARD").then_some(match self.key {
-            "GAS" => "R2",
-            "BRAKE" => "L2",
-            _ => "Left stick",
-        })
+    /// Why this action has no pad button to bind, or `None` when AC reads one for it.
+    /// Throttle, brake and steering are analog (R2, L2, left stick); the pad controller
+    /// forces auto clutch, so a clutch button is never read.
+    pub fn pad_note(&self) -> Option<&'static str> {
+        if self.section == "KEYBOARD" {
+            return Some(match self.key {
+                "GAS" => "R2 (automatic)",
+                "BRAKE" => "L2 (automatic)",
+                _ => "Left stick (automatic)",
+            });
+        }
+        if self.section == "CLUTCH" {
+            return Some("Auto clutch on pad");
+        }
+        (!PAD_SECTIONS.contains(&self.section)).then_some("Keyboard only")
     }
 }
 
@@ -439,7 +456,7 @@ impl GameConfig {
     }
 
     pub fn pad(&self, b: &Bind) -> Option<&str> {
-        if b.pad_axis().is_some() {
+        if b.pad_note().is_some() {
             return None;
         }
         self.get("controls.ini", b.section, "XBOXBUTTON").map(str::trim).filter(|v| !v.is_empty() && *v != "-1")
