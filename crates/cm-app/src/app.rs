@@ -8,7 +8,7 @@ use std::sync::Arc;
 use ac_core::content::{self, Car, TrackEntry, Weather};
 use ac_core::game_cfg::{self, GameConfig, Kind, Setting, Tab};
 use ac_core::race::{self, Conditions, Mode, QuickDrive};
-use ac_core::settings::Settings;
+use ac_core::settings::{PickerView, Settings};
 use ac_core::{acd, install, launch, paths};
 use gpui::{
     BoxShadow, ClickEvent, Context, Div, Entity, FocusHandle, FontWeight, KeyDownEvent,
@@ -97,9 +97,18 @@ enum PickerKind {
 }
 
 const PICK_CARD_MIN_W: f32 = 200.;
-const PICK_CARD_H: f32 = 176.;
-const PICK_ROW_H: f32 = PICK_CARD_H + 12.;
+const PICK_LIST_CARD_H: f32 = 96.;
+const PICK_LIST_ROW_H: f32 = PICK_LIST_CARD_H + 8.;
 const BRAND_CARD_H: f32 = 104.;
+
+#[derive(Clone, Copy)]
+struct PickerLayout {
+    cols: usize,
+    card_w: f32,
+    img_h: f32,
+    card_h: f32,
+    row_h: f32,
+}
 
 fn grid_step(name: &str, pos: usize, len: usize, cols: usize) -> Option<usize> {
     match name {
@@ -111,11 +120,62 @@ fn grid_step(name: &str, pos: usize, len: usize, cols: usize) -> Option<usize> {
     }
 }
 
-/// Columns and card width that fill a picker grid of `viewport_w` (24 px side padding, 12 px gaps).
+/// Columns and card width that fill a responsive picker grid of `viewport_w` (24 px side padding, 12 px gaps).
 fn picker_geometry(viewport_w: f32) -> (usize, f32) {
     let avail = (viewport_w - 48.).max(PICK_CARD_MIN_W);
     let cols = (((avail + 12.) / (PICK_CARD_MIN_W + 12.)).floor() as usize).max(1);
     (cols, (avail - 12. * (cols as f32 - 1.)) / cols as f32)
+}
+
+fn picker_layout(viewport_w: f32, view: PickerView) -> PickerLayout {
+    let avail = (viewport_w - 48.).max(PICK_CARD_MIN_W);
+    if view.is_list() {
+        return PickerLayout {
+            cols: 1,
+            card_w: avail,
+            img_h: 76.,
+            card_h: PICK_LIST_CARD_H,
+            row_h: PICK_LIST_ROW_H,
+        };
+    }
+    let cols = match view {
+        PickerView::Grid3 => 3,
+        PickerView::Grid4 => 4,
+        PickerView::Grid5 => 5,
+        PickerView::GridAuto | PickerView::List => {
+            (((avail + 12.) / (PICK_CARD_MIN_W + 12.)).floor() as usize).max(1)
+        }
+    };
+    let card_w = ((avail - 12. * (cols as f32 - 1.)) / cols as f32).max(140.);
+    let img_h = ((card_w - 16.) * 9. / 16.).clamp(108., 220.);
+    let card_h = img_h + 68.;
+    PickerLayout {
+        cols,
+        card_w,
+        img_h,
+        card_h,
+        row_h: card_h + 12.,
+    }
+}
+
+fn car_spec<'a>(car: &'a Car, key: &str) -> Option<&'a str> {
+    car.specs
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| v.trim())
+        .filter(|v| !v.is_empty() && !matches!(*v, "--" | "?" | "-"))
+}
+
+fn format_track_length(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.chars().any(|c| c.is_ascii_alphabetic()) {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed} m")
+    }
 }
 
 /// Height of the top tab bar and the footer hint bar (56 px each plus a 1 px border).
@@ -231,8 +291,7 @@ pub struct CmApp {
     picker: Option<PickerKind>,
     picker_focus: usize,
     picker_scroll: UniformListScrollHandle,
-    picker_cols: usize,
-    picker_card_w: f32,
+    picker_viewport_w: f32,
     /// Last device that produced input; decides hint glyphs and focus-ring visibility.
     input_device: crate::nav::InputDevice,
     car_brand: Option<String>,
@@ -245,6 +304,10 @@ pub struct CmApp {
     track_sort_desc: bool,
     sort_menu_open: bool,
     sort_menu_focus: usize,
+    view_menu_open: bool,
+    view_menu_focus: usize,
+    last_car_grid: PickerView,
+    last_track_grid: PickerView,
 
     mode: ModeKind,
     practice_minutes: u32,
@@ -424,6 +487,16 @@ impl CmApp {
             last.conditions.clone()
         };
 
+        let last_car_grid = if settings.car_picker_view.is_list() {
+            PickerView::GridAuto
+        } else {
+            settings.car_picker_view
+        };
+        let last_track_grid = if settings.track_picker_view.is_list() {
+            PickerView::GridAuto
+        } else {
+            settings.track_picker_view
+        };
         let mut this = Self {
             page: if ac_root.is_some() {
                 Page::QuickDrive
@@ -448,11 +521,12 @@ impl CmApp {
             pad_mute_until: None,
             root_focus: cx.focus_handle(),
             drive_focus: 0,
+            last_car_grid,
+            last_track_grid,
             picker: None,
             picker_focus: 0,
             picker_scroll: UniformListScrollHandle::new(),
-            picker_cols: 1,
-            picker_card_w: PICK_CARD_MIN_W,
+            picker_viewport_w: 1360.,
             input_device: crate::nav::InputDevice::default(),
             car_brand: None,
             brand_menu_focus: None,
@@ -464,6 +538,8 @@ impl CmApp {
             track_sort_desc: false,
             sort_menu_open: false,
             sort_menu_focus: 0,
+            view_menu_open: false,
+            view_menu_focus: 0,
             mode,
             practice_minutes,
             laps,
@@ -2053,13 +2129,25 @@ impl CmApp {
         }
     }
 
+    fn active_picker_view(&self) -> PickerView {
+        match self.picker {
+            Some(PickerKind::Track) => self.settings.track_picker_view,
+            _ => self.settings.car_picker_view,
+        }
+    }
+
+    fn active_picker_layout(&self) -> PickerLayout {
+        picker_layout(self.picker_viewport_w, self.active_picker_view())
+    }
+
     fn open_picker(&mut self, kind: PickerKind, window: &Window) {
-        let (cols, w) = picker_geometry(f32::from(window.viewport_size().width));
-        self.picker_cols = cols;
-        self.picker_card_w = w;
+        self.picker_viewport_w = f32::from(window.viewport_size().width);
         self.picker = Some(kind);
         self.sort_menu_open = false;
         self.sort_menu_focus = 0;
+        self.view_menu_open = false;
+        self.view_menu_focus = 0;
+        let cols = self.active_picker_layout().cols.max(1);
         let current = if kind == PickerKind::Car { self.car } else { self.track };
         let view = self.picker_view();
         self.picker_focus = current.and_then(|c| view.iter().position(|&i| i == c)).unwrap_or(0);
@@ -2076,10 +2164,12 @@ impl CmApp {
         }
         self.picker = None;
         self.sort_menu_open = false;
+        self.view_menu_open = false;
         cx.notify();
     }
 
     fn toggle_sort_menu(&mut self, cx: &mut Context<Self>) {
+        self.view_menu_open = false;
         if self.sort_menu_open {
             self.sort_menu_open = false;
         } else {
@@ -2096,6 +2186,42 @@ impl CmApp {
                 None => 0,
             };
         }
+        cx.notify();
+    }
+
+    fn toggle_view_menu(&mut self, cx: &mut Context<Self>) {
+        self.sort_menu_open = false;
+        if self.view_menu_open {
+            self.view_menu_open = false;
+        } else {
+            self.view_menu_open = true;
+            self.view_menu_focus = if self.active_picker_view().is_list() { 1 } else { 0 };
+        }
+        cx.notify();
+    }
+
+    fn set_picker_view(&mut self, view: PickerView, cx: &mut Context<Self>) {
+        match self.picker {
+            Some(PickerKind::Car) => {
+                self.settings.car_picker_view = view;
+                if !view.is_list() {
+                    self.last_car_grid = view;
+                }
+            }
+            Some(PickerKind::Track) => {
+                self.settings.track_picker_view = view;
+                if !view.is_list() {
+                    self.last_track_grid = view;
+                }
+            }
+            None => return,
+        }
+        if let Err(e) = self.settings.save() {
+            self.set_status(format!("Couldn't save settings: {e:#}"), true, cx);
+        }
+        let cols = self.active_picker_layout().cols.max(1);
+        self.picker_scroll
+            .scroll_to_item(self.picker_focus / cols, ScrollStrategy::Center);
         cx.notify();
     }
 
@@ -2137,10 +2263,12 @@ impl CmApp {
 
     fn open_brand_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sort_menu_open = false;
+        self.view_menu_open = false;
+        let (cols, _) = picker_geometry(self.picker_viewport_w);
         let pos = self.selected_brand_pos();
         self.brand_menu_focus = Some(pos);
         self.brand_menu_scroll
-            .scroll_to_item(pos / self.picker_cols, ScrollStrategy::Center);
+            .scroll_to_item(pos / cols, ScrollStrategy::Center);
         self.focus_root(window);
         cx.notify();
     }
@@ -2160,10 +2288,11 @@ impl CmApp {
     fn brand_menu_press(&mut self, name: &str, pos: usize, cx: &mut Context<Self>) {
         let len = self.content.car_brands.len() + 1; // All brands is first.
         let pos = pos.min(len - 1);
-        if let Some(next) = grid_step(name, pos, len, self.picker_cols) {
+        let (cols, _) = picker_geometry(self.picker_viewport_w);
+        if let Some(next) = grid_step(name, pos, len, cols) {
             self.brand_menu_focus = Some(next);
             self.brand_menu_scroll
-                .scroll_to_item(next / self.picker_cols, ScrollStrategy::Center);
+                .scroll_to_item(next / cols, ScrollStrategy::Center);
         } else if name == "A" {
             self.select_brand(self.brand_at(pos).map(|brand| brand.name.clone()), cx);
         } else if matches!(name, "B" | "LTRIGGER" | "RTRIGGER") {
@@ -2182,6 +2311,71 @@ impl CmApp {
             return;
         }
         let kind = self.picker.unwrap_or(PickerKind::Car);
+        if self.view_menu_open {
+            let last_grid = if kind == PickerKind::Car {
+                self.last_car_grid
+            } else {
+                self.last_track_grid
+            };
+            let active_col_ix = match self.active_picker_view() {
+                PickerView::GridAuto => 2,
+                PickerView::Grid3 => 3,
+                PickerView::Grid4 => 4,
+                PickerView::Grid5 => 5,
+                PickerView::List => match last_grid {
+                    PickerView::Grid3 => 3,
+                    PickerView::Grid4 => 4,
+                    PickerView::Grid5 => 5,
+                    _ => 2,
+                },
+            };
+            match name {
+                "DPAD_UP" => {
+                    if self.view_menu_focus >= 2 {
+                        self.view_menu_focus = 1;
+                    } else {
+                        self.view_menu_focus = self.view_menu_focus.saturating_sub(1);
+                    }
+                }
+                "DPAD_DOWN" => {
+                    if self.view_menu_focus == 0 {
+                        self.view_menu_focus = 1;
+                    } else if self.view_menu_focus == 1 {
+                        self.view_menu_focus = active_col_ix;
+                    }
+                }
+                "DPAD_LEFT" if self.view_menu_focus > 2 => {
+                    self.view_menu_focus -= 1;
+                }
+                "DPAD_RIGHT" if (2..5).contains(&self.view_menu_focus) => {
+                    self.view_menu_focus += 1;
+                }
+                "A" => {
+                    let target = match self.view_menu_focus {
+                        0 => last_grid,
+                        1 => PickerView::List,
+                        2 => PickerView::GridAuto,
+                        3 => PickerView::Grid3,
+                        4 => PickerView::Grid4,
+                        _ => PickerView::Grid5,
+                    };
+                    self.set_picker_view(target, cx);
+                }
+                "B" | "VIEW" => self.view_menu_open = false,
+                "X" => self.toggle_sort_menu(cx),
+                "Y" => {
+                    self.view_menu_open = false;
+                    let input = if kind == PickerKind::Car {
+                        self.car_filter.clone()
+                    } else {
+                        self.track_filter.clone()
+                    };
+                    input.read(cx).focus(window);
+                }
+                _ => {}
+            }
+            return;
+        }
         if self.sort_menu_open {
             let option_count = if kind == PickerKind::Car {
                 CarSort::ALL.len()
@@ -2229,6 +2423,7 @@ impl CmApp {
                     }
                 }
                 "B" | "X" => self.sort_menu_open = false,
+                "VIEW" => self.toggle_view_menu(cx),
                 "Y" => {
                     self.sort_menu_open = false;
                     let input = if kind == PickerKind::Car {
@@ -2243,7 +2438,7 @@ impl CmApp {
             return;
         }
         let len = self.picker_view().len();
-        let cols = self.picker_cols.max(1);
+        let cols = self.active_picker_layout().cols.max(1);
         let at = self.picker_focus.min(len.saturating_sub(1));
         if let Some(next) = grid_step(name, at, len, cols) {
             self.picker_focus = next;
@@ -2258,6 +2453,7 @@ impl CmApp {
             }
             "B" => {
                 self.sort_menu_open = false;
+                self.view_menu_open = false;
                 self.picker = None;
             }
             "Y" => {
@@ -2265,6 +2461,7 @@ impl CmApp {
                 input.read(cx).focus(window);
             }
             "X" => self.toggle_sort_menu(cx),
+            "VIEW" => self.toggle_view_menu(cx),
             "LTRIGGER" | "RTRIGGER" if kind == PickerKind::Car => self.open_brand_menu(window, cx),
             _ => {}
         }
@@ -2300,6 +2497,7 @@ impl CmApp {
             ("[", _) => "LTRIGGER",
             ("]", _) => "RTRIGGER",
             ("x", _) => "X",
+            ("v", _) if self.picker.is_some() => "VIEW",
             ("/", _) => "Y",
             _ => return,
         };
@@ -2552,10 +2750,13 @@ impl CmApp {
             )
     }
 
-    fn picker_card(&self, pos: usize, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    fn picker_card(&self, pos: usize, layout: PickerLayout, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let kind = self.picker.unwrap_or(PickerKind::Car);
-        let w = self.picker_card_w;
-        let focused = self.input_device.shows_focus() && !self.sort_menu_open && self.picker_focus == pos;
+        let w = layout.card_w;
+        let focused = self.input_device.shows_focus()
+            && !self.sort_menu_open
+            && !self.view_menu_open
+            && self.picker_focus == pos;
         let (ix, title, sub, image, current) = match kind {
             PickerKind::Car => {
                 let ix = self.cars_view[pos];
@@ -2566,9 +2767,10 @@ impl CmApp {
             PickerKind::Track => {
                 let ix = self.tracks_view[pos];
                 let t = &self.content.tracks[ix];
-                let sub = [t.layout.country.clone(), t.layout.length.clone().map(|l| format!("{l} m"))]
+                let sub = [t.layout.country.clone(), t.layout.length.as_deref().map(format_track_length)]
                     .into_iter()
                     .flatten()
+                    .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>()
                     .join(" · ");
                 (ix, t.layout.name.clone(), sub, t.layout.preview.clone().or_else(|| t.layout.outline.clone()), self.track == Some(ix))
@@ -2578,7 +2780,7 @@ impl CmApp {
             div()
                 .id(("pcard", pos))
                 .w(px(w))
-                .h(px(PICK_CARD_H))
+                .h(px(layout.card_h))
                 .flex_shrink_0()
                 .flex()
                 .flex_col()
@@ -2591,8 +2793,250 @@ impl CmApp {
             focused,
         )
         .on_click(cx.listener(move |this, _, _, cx| this.pick(kind, ix, cx)))
-        .child(picture(image, 108.).w_full())
-        .child(two_lines(title, sub, Some(w - 28.)))
+        .child(picture(image, layout.img_h).w_full())
+        .child(two_lines(title, sub, Some((w - 28.).max(80.))))
+    }
+
+    fn picker_list_row(&self, pos: usize, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let kind = self.picker.unwrap_or(PickerKind::Car);
+        let focused = self.input_device.shows_focus()
+            && !self.sort_menu_open
+            && !self.view_menu_open
+            && self.picker_focus == pos;
+
+        let stat_col = |label: &'static str, value: String, width: f32| {
+            div()
+                .w(px(width))
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .items_end()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::faint())
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::text())
+                        .whitespace_nowrap()
+                        .truncate()
+                        .max_w_full()
+                        .child(value),
+                )
+        };
+
+        let tag_strip = |tags: &[String]| {
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .overflow_hidden()
+                .children(tags.iter().take(4).map(|tag| {
+                    div()
+                        .px_1p5()
+                        .py_0p5()
+                        .rounded(px(4.))
+                        .bg(theme::raised())
+                        .text_xs()
+                        .text_color(theme::muted())
+                        .whitespace_nowrap()
+                        .child(tag.clone())
+                }))
+        };
+
+        match kind {
+            PickerKind::Car => {
+                let ix = self.cars_view[pos];
+                let c = &self.content.cars[ix];
+                let current = self.car == Some(ix);
+                let meta = [
+                    c.brand.clone(),
+                    c.class.clone(),
+                    c.year.clone(),
+                    c.country.clone(),
+                ]
+                .into_iter()
+                .flatten()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
+
+                let bhp_val = car_spec(c, "bhp").unwrap_or("--").to_string();
+                let torque_val = car_spec(c, "torque").unwrap_or("--").to_string();
+                let weight_val = car_spec(c, "weight").unwrap_or("--").to_string();
+                let skins_val = if c.skins.is_empty() {
+                    "--".to_string()
+                } else {
+                    c.skins.len().to_string()
+                };
+                let stats = div()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap_4()
+                    .child(stat_col("POWER", bhp_val, 88.))
+                    .child(stat_col("TORQUE", torque_val, 88.))
+                    .child(stat_col("WEIGHT", weight_val, 80.))
+                    .child(stat_col("SKINS", skins_val, 48.));
+
+                focus_ring(
+                    div()
+                        .id(("prow-item", pos))
+                        .w_full()
+                        .h(px(PICK_LIST_CARD_H))
+                        .px_3()
+                        .py_2()
+                        .rounded(px(theme::RADIUS_MD))
+                        .flex()
+                        .items_center()
+                        .gap_4()
+                        .cursor_pointer()
+                        .when(current, |d| d.bg(theme::overlay()))
+                        .when(!current, |d| d.bg(theme::surface()).hover(|s| s.bg(theme::raised()))),
+                    focused,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.pick(kind, ix, cx)))
+                .child(picture(c.preview().map(|p| p.to_path_buf()), 76.).w(px(136.)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .min_w_0()
+                                .when_some(c.badge.clone(), |d, b| {
+                                    d.child(
+                                        img(b)
+                                            .size(px(20.))
+                                            .flex_shrink_0()
+                                            .object_fit(ObjectFit::Contain),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_base()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .truncate()
+                                        .child(c.name.clone()),
+                                ),
+                        )
+                        .when(!meta.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme::muted())
+                                    .truncate()
+                                    .child(meta),
+                            )
+                        })
+                        .when(!c.tags.is_empty(), |d| d.child(tag_strip(&c.tags))),
+                )
+                .child(stats)
+            }
+            PickerKind::Track => {
+                let ix = self.tracks_view[pos];
+                let t = &self.content.tracks[ix];
+                let l = &t.layout;
+                let current = self.track == Some(ix);
+                let place = [l.country.clone(), l.city.clone()]
+                    .into_iter()
+                    .flatten()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let meta = if place.is_empty() { t.key() } else { place };
+
+                let length_val = l
+                    .length
+                    .as_deref()
+                    .map(format_track_length)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "--".into());
+                let pits_val = l
+                    .pitboxes
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "--".into());
+
+                focus_ring(
+                    div()
+                        .id(("prow-item", pos))
+                        .w_full()
+                        .h(px(PICK_LIST_CARD_H))
+                        .px_3()
+                        .py_2()
+                        .rounded(px(theme::RADIUS_MD))
+                        .flex()
+                        .items_center()
+                        .gap_4()
+                        .cursor_pointer()
+                        .when(current, |d| d.bg(theme::overlay()))
+                        .when(!current, |d| d.bg(theme::surface()).hover(|s| s.bg(theme::raised()))),
+                    focused,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.pick(kind, ix, cx)))
+                .child(picture(l.preview.clone(), 76.).w(px(136.)))
+                .child(
+                    div()
+                        .size(px(76.))
+                        .flex_shrink_0()
+                        .rounded(px(theme::RADIUS_SM))
+                        .bg(theme::bg())
+                        .border_1()
+                        .border_color(theme::border())
+                        .overflow_hidden()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(track_map(l.racing_line.clone(), l.outline.clone(), 74.)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_base()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .truncate()
+                                .child(l.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::muted())
+                                .truncate()
+                                .child(meta),
+                        )
+                        .when(!l.tags.is_empty(), |d| d.child(tag_strip(&l.tags))),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap_4()
+                        .child(stat_col("LENGTH", length_val, 88.))
+                        .child(stat_col("PITS", pits_val, 52.)),
+                )
+            }
+        }
     }
 
     fn brand_card(
@@ -2604,7 +3048,7 @@ impl CmApp {
         let brand = self.brand_at(pos);
         let label = brand.map_or("All brands", |brand| brand.name.as_str());
         let choice = brand.map(|brand| brand.name.clone());
-        let w = self.picker_card_w;
+        let (_, w) = picker_geometry(self.picker_viewport_w);
         focus_ring(
             div()
                 .id(("brand-card", pos))
@@ -2639,13 +3083,13 @@ impl CmApp {
     }
 
     fn brand_menu(&self, cx: &mut Context<Self>) -> Div {
-        let cols = self.picker_cols;
+        let (cols, _) = picker_geometry(self.picker_viewport_w);
         let len = self.content.car_brands.len() + 1;
         let grid = uniform_list(
             "brand-grid",
             len.div_ceil(cols),
             cx.processor(|this, range: Range<usize>, _, cx| {
-                let cols = this.picker_cols;
+                let (cols, _) = picker_geometry(this.picker_viewport_w);
                 let len = this.content.car_brands.len() + 1;
                 let selected = this.selected_brand_pos();
                 range
@@ -2849,6 +3293,130 @@ impl CmApp {
     }
 
     /// Full-screen car/track picker: search, sort, brand filter and a grid of cards.
+    /// Compact dropdown menu anchored to the picker's View button.
+    fn view_menu(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let shows = self.input_device.shows_focus();
+        let active = self.active_picker_view();
+        let last_grid = match self.picker {
+            Some(PickerKind::Track) => self.last_track_grid,
+            _ => self.last_car_grid,
+        };
+
+        let mode_row = |id: &'static str, label: &'static str, selected: bool, focus_ix: usize, target: PickerView| {
+            let row = div()
+                .id(id)
+                .flex()
+                .items_center()
+                .justify_between()
+                .px_2()
+                .py_0p5()
+                .rounded(px(theme::RADIUS_SM))
+                .text_sm()
+                .cursor_pointer()
+                .when(selected, |d| {
+                    d.bg(theme::overlay())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::text())
+                })
+                .when(!selected, |d| {
+                    d.text_color(theme::muted())
+                        .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
+                })
+                .child(label)
+                .when(selected, |d| {
+                    d.child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme::accent())
+                            .child("✓"),
+                    )
+                })
+                .on_click(cx.listener(move |this, _, _, cx| this.set_picker_view(target, cx)));
+            focus_ring(row, shows && self.view_menu_focus == focus_ix)
+        };
+
+        let col_btn = |id: &'static str, label: &'static str, target: PickerView, focus_ix: usize| {
+            let is_active = active == target;
+            let btn = div()
+                .id(id)
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .py_1()
+                .px_2()
+                .rounded(px(theme::RADIUS_SM))
+                .text_xs()
+                .whitespace_nowrap()
+                .cursor_pointer()
+                .when(is_active, |d| {
+                    d.bg(theme::accent())
+                        .text_color(theme::on_accent())
+                        .font_weight(FontWeight::BOLD)
+                })
+                .when(!is_active, |d| {
+                    d.bg(theme::raised())
+                        .text_color(theme::muted())
+                        .hover(|s| s.bg(theme::overlay()).text_color(theme::text()))
+                })
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| this.set_picker_view(target, cx)));
+            focus_ring(btn, shows && self.view_menu_focus == focus_ix)
+        };
+
+        div()
+            .id("view-menu")
+            .absolute()
+            .top_full()
+            .right_0()
+            .mt_1()
+            .w(px(232.))
+            .p_1p5()
+            .rounded(px(theme::RADIUS_SM))
+            .bg(theme::surface())
+            .border_1()
+            .border_color(theme::border())
+            .shadow(vec![BoxShadow {
+                color: rgba(0x00000099).into(),
+                offset: point(px(0.), px(6.)),
+                blur_radius: px(16.),
+                spread_radius: px(0.),
+            }])
+            .flex()
+            .flex_col()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(mode_row("view-opt-grid", "Grid", !active.is_list(), 0, last_grid))
+                    .child(mode_row("view-opt-list", "List", active.is_list(), 1, PickerView::List)),
+            )
+            .child(div().h(px(1.)).my_1p5().bg(theme::border()))
+            .child(
+                div()
+                    .px_1()
+                    .pb_1()
+                    .text_xs()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme::faint())
+                    .child("GRID COLUMNS"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .child(col_btn("view-col-auto", "Auto", PickerView::GridAuto, 2))
+                    .child(col_btn("view-col-3", "3", PickerView::Grid3, 3))
+                    .child(col_btn("view-col-4", "4", PickerView::Grid4, 4))
+                    .child(col_btn("view-col-5", "5", PickerView::Grid5, 5)),
+            )
+            .into_any_element()
+    }
+
     fn picker_sheet(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let kind = self.picker.unwrap_or(PickerKind::Car);
         let cars = kind == PickerKind::Car;
@@ -2874,25 +3442,41 @@ impl CmApp {
             )
         };
         let len = self.picker_view().len();
-        let cols = self.picker_cols.max(1);
+        let active_view = self.active_picker_view();
+        let layout = self.active_picker_layout();
+        let cols = layout.cols.max(1);
         let body: gpui::AnyElement = if len == 0 {
             div().flex_1().flex().items_center().justify_center().text_color(theme::muted()).child("No matches").into_any_element()
         } else {
             uniform_list(
-                "picker-grid",
+                ("picker-items", active_view.id()),
                 len.div_ceil(cols),
                 cx.processor(|this, range: Range<usize>, _window, cx| {
-                    let cols = this.picker_cols.max(1);
+                    let view = this.active_picker_view();
+                    let layout = this.active_picker_layout();
+                    let cols = layout.cols.max(1);
                     let len = this.picker_view().len();
-                    range
-                        .map(|ri| {
-                            let mut row = div().id(("prow", ri)).flex().gap_3().h(px(PICK_ROW_H)).w_full();
-                            for pos in (ri * cols..(ri + 1) * cols).take_while(|p| *p < len) {
-                                row = row.child(this.picker_card(pos, cx));
-                            }
-                            row
-                        })
-                        .collect()
+                    if view.is_list() {
+                        range
+                            .map(|ri| {
+                                div()
+                                    .id(("prow", ri))
+                                    .h(px(layout.row_h))
+                                    .w_full()
+                                    .child(this.picker_list_row(ri, cx))
+                            })
+                            .collect()
+                    } else {
+                        range
+                            .map(|ri| {
+                                let mut row = div().id(("prow", ri)).flex().gap_3().h(px(layout.row_h)).w_full();
+                                for pos in (ri * cols..(ri + 1) * cols).take_while(|p| *p < len) {
+                                    row = row.child(this.picker_card(pos, layout, cx));
+                                }
+                                row
+                            })
+                            .collect()
+                    }
                 }),
             )
             .track_scroll(self.picker_scroll.clone())
@@ -2900,7 +3484,8 @@ impl CmApp {
             .px_6()
             .into_any_element()
         };
-        let hints = if self.sort_menu_open {
+        let menu_open = self.sort_menu_open || self.view_menu_open;
+        let hints = if menu_open {
             vec![
                 hint(dev.label(NavAction::Confirm), "Select"),
                 hint(dev.label(NavAction::Back), "Close menu"),
@@ -2912,6 +3497,9 @@ impl CmApp {
                 hint(dev.label(NavAction::Search), "Search"),
                 hint(dev.label(NavAction::Secondary), "Sort"),
             ];
+            if dev == crate::nav::InputDevice::Keyboard {
+                h.push(hint("V", "View"));
+            }
             if cars {
                 h.push(hint(
                     &format!("{}/{}", dev.label(NavAction::SubPrev), dev.label(NavAction::SubNext)),
@@ -2943,6 +3531,18 @@ impl CmApp {
                         div()
                             .relative()
                             .child(
+                                button("pick-view", format!("View: {} ▾", active_view.label()))
+                                    .when(self.view_menu_open, |d| d.border_color(theme::accent()))
+                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_view_menu(cx))),
+                            )
+                            .when(self.view_menu_open, |d| {
+                                d.child(deferred(self.view_menu(cx)).with_priority(1))
+                            }),
+                    )
+                    .child(
+                        div()
+                            .relative()
+                            .child(
                                 button(
                                     "pick-sort",
                                     format!("Sort: {sort_label} {}", if desc { "↓" } else { "↑" }),
@@ -2962,6 +3562,7 @@ impl CmApp {
                     })
                     .child(button("pick-close", "Close").on_click(cx.listener(|this, _, _, cx| {
                         this.sort_menu_open = false;
+                        this.view_menu_open = false;
                         this.picker = None;
                         cx.notify();
                     }))),
@@ -2969,10 +3570,10 @@ impl CmApp {
             .child(div().h(px(12.)).flex_shrink_0())
             .child(body)
             .child(hint_bar(hints, None))
-            .when(self.sort_menu_open, |d| {
+            .when(menu_open, |d| {
                 d.child(
                     div()
-                        .id("sort-menu-backdrop")
+                        .id("picker-menu-backdrop")
                         .absolute()
                         .inset_0()
                         .occlude()
@@ -2980,6 +3581,7 @@ impl CmApp {
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
                                 this.sort_menu_open = false;
+                                this.view_menu_open = false;
                                 cx.stop_propagation();
                                 cx.notify();
                             }),
@@ -3551,7 +4153,11 @@ impl CmApp {
 
 impl Render for CmApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let main_w = f32::from(window.viewport_size().width) - SIDEBAR_W;
+        let vp_w = f32::from(window.viewport_size().width);
+        if self.picker.is_some() {
+            self.picker_viewport_w = vp_w;
+        }
+        let main_w = vp_w - SIDEBAR_W;
         let page: gpui::AnyElement = if self.loading && self.page != Page::Browser {
             div()
                 .p_4()
