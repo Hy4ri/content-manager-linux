@@ -2165,38 +2165,173 @@ impl EventsView {
     }
 
     fn special_details(&self, width: f32, cx: &mut Context<Self>) -> AnyElement {
+        let pad_x = 20.0f32;
+        let col_gap = 12.0f32;
+        let avail_w = (width - 2.0 * pad_x).max(320.0);
+
         let Some(e) = self.current_event() else {
             return div()
-                .p_4()
-                .text_color(theme::muted())
-                .child("No events match your filter.")
+                .px(px(pad_x))
+                .py_3()
+                .child(
+                    panel()
+                        .p_4()
+                        .text_sm()
+                        .text_color(theme::muted())
+                        .child("No events match your filter."),
+                )
                 .into_any_element();
         };
+
         let p = self.progress.get(&e.id);
-        let mut body = div().flex().flex_col().gap_3().p_4().w(px(width));
-        if !e.goals.is_empty() {
+        let two_col = avail_w >= 860.0;
+        let side_w = if two_col {
+            (avail_w * 0.44).floor().clamp(340.0, 480.0)
+        } else {
+            avail_w
+        };
+        let left_w = if two_col {
+            (avail_w - side_w - col_gap).max(340.0)
+        } else {
+            avail_w
+        };
+
+        let car_name = self.meta.car_name(&e.car).to_string();
+        let track_name = self.meta.track_name(&e.track, &e.layout).to_string();
+        let preview = e
+            .preview
+            .clone()
+            .or_else(|| self.meta.car_preview(&e.car));
+        let mode = e
+            .sessions
+            .last()
+            .map(|s| events::mode_label(s.kind))
+            .unwrap_or("Event");
+
+        // Row 1: Full-width hero card (badges, title, description on left; compact preview on right)
+        let thumb_w = 204.0f32;
+        let hero_text_w = if two_col {
+            (avail_w - thumb_w - 40.0).max(220.0)
+        } else {
+            (avail_w - 24.0).max(200.0)
+        };
+        let status_pill = (p.medal > 0).then(|| {
+            badge(
+                medal(p.medal).to_uppercase(),
+                theme::on_accent(),
+                medal_color(p.medal),
+            )
+        });
+        let hero_text = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .flex_1()
+            .min_w_0()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(badge(
+                        format!("#{}", self.selected + 1),
+                        theme::text(),
+                        theme::overlay(),
+                    ))
+                    .child(badge(mode, theme::muted(), theme::raised()))
+                    .when_some(status_pill, |d, b| d.child(b)),
+            )
+            .child(
+                line(e.name.clone(), hero_text_w)
+                    .text_xl()
+                    .font_weight(FontWeight::BOLD),
+            )
+            .when(!e.description.is_empty(), |d| {
+                d.child(line(e.description.clone(), hero_text_w).text_color(theme::muted()))
+            });
+        let hero_card = panel()
+            .p_3()
+            .flex()
+            .when(two_col, |d| d.items_center().justify_between().gap_4())
+            .when(!two_col, |d| d.flex_col().gap_3())
+            .child(hero_text)
+            .child(picture(preview, 108.).w(px(if two_col { thumb_w } else { avail_w - 24. })));
+
+        // Row 2 Left: Event details card
+        let details_card = panel()
+            .p_3()
+            .w(px(left_w))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(section_title("Event details").mt_0())
+            .child(field("Car", car_name))
+            .child(field(
+                "Track",
+                format!(
+                    "{}{}",
+                    track_name,
+                    if e.layout.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" / {}", e.layout)
+                    }
+                ),
+            ))
+            .child(field("Weather", e.weather.clone()))
+            .child(field(
+                "Temperature",
+                format!(
+                    "Air {}°C · Road {}°C",
+                    e.ambient
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                    e.road.map(|v| v.to_string()).unwrap_or_else(|| "—".into())
+                ),
+            ))
+            .child(field(
+                "Rules",
+                format!(
+                    "Penalties {} · Fixed setup {}",
+                    if e.penalties { "on" } else { "off" },
+                    if e.fixed_setup { "on" } else { "off" }
+                ),
+            ))
+            .child(field("AI strength", format!("{}%", e.ai_level)));
+
+        // Row 2 Right: Medal targets card (with AI difficulty selector when applicable)
+        let targets_card = if !e.goals.is_empty() {
             let mut goals = panel()
+                .p_3()
+                .w(px(side_w))
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(section_title("Medal targets"));
+                .child(section_title("Medal targets").mt_0());
             for (i, g) in e.goals.iter().enumerate() {
                 let n = (i + 1) as u8;
                 goals = goals.child(
                     div()
                         .flex()
                         .justify_between()
+                        .items_center()
                         .gap_2()
-                        .child(
-                            line(
-                                format!("{}  ·  {}", medal(n), events::goal_label(g)),
-                                width - 155.,
-                            )
-                            .text_color(medal_color(n)),
-                        )
+                        .py_1()
+                        .px_2()
+                        .rounded(px(theme::RADIUS_SM))
+                        .bg(theme::bg())
                         .child(
                             div()
                                 .text_sm()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(medal_color(n))
+                                .child(format!("{}  ·  {}", medal(n), events::goal_label(g))),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::BOLD)
                                 .text_color(if p.medal >= n {
                                     theme::ok()
                                 } else {
@@ -2208,146 +2343,196 @@ impl EventsView {
             }
             if e.goals.first().is_some_and(|g| g.kind == "AI") {
                 goals = goals.child(
-                    div().flex().gap_1().children(
-                        (0..e.goals.len().min(3))
-                            .map(|i| {
-                                chip(
-                                    ("event-difficulty", i),
-                                    format!("{} · {}%", medal(i as u8 + 1), e.goals[i].objective),
-                                    self.difficulty == i,
-                                )
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.difficulty = i;
-                                    cx.notify();
-                                }))
-                                .into_any_element()
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
+                    div()
+                        .pt_2()
+                        .border_t_1()
+                        .border_color(theme::border())
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::muted())
+                                .child("Target AI difficulty"),
+                        )
+                        .child(
+                            div().flex().flex_wrap().gap_1().children(
+                                (0..e.goals.len().min(3))
+                                    .map(|i| {
+                                        chip(
+                                            ("event-difficulty", i),
+                                            format!(
+                                                "{} · {}%",
+                                                medal(i as u8 + 1),
+                                                e.goals[i].objective
+                                            ),
+                                            self.difficulty == i,
+                                        )
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.difficulty = i;
+                                            cx.notify();
+                                        }))
+                                        .into_any_element()
+                                    })
+                                    .collect::<Vec<_>>(),
+                            ),
+                        ),
                 );
             }
-            body = body.child(goals);
-        }
-        body = body.child(
+            goals
+        } else {
             panel()
+                .p_3()
+                .w(px(side_w))
                 .flex()
                 .flex_col()
-                .gap_1()
-                .child(section_title("Your progress"))
-                .child(field("Best medal", medal(p.medal)))
-                .child(field("Attempts", p.attempts.to_string()))
-                .child(field("Best score", score_display(e, &p, false)))
-                .when_some(p.last_position, |d, pos| {
-                    d.child(field("Last finish", format!("Position {pos}")))
-                }),
-        );
-        let car_name = self.meta.car_name(&e.car).to_string();
-        let track_name = self.meta.track_name(&e.track, &e.layout).to_string();
-        let preview = e
-            .preview
-            .clone()
-            .or_else(|| self.meta.car_preview(&e.car));
-        body = body
-            .child(picture(preview, 180.))
+                .gap_2()
+                .child(section_title("Medal targets").mt_0())
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::muted())
+                        .child("Complete the session to record your result."),
+                )
+        };
+
+        // Row 3 Left: Session schedule + race config toggle inside card header
+        let mut sessions_card = panel()
+            .p_3()
+            .w(px(left_w))
+            .flex()
+            .flex_col()
+            .gap_2()
             .child(
-                line(e.name.clone(), width - 32.)
-                    .text_xl()
-                    .font_weight(FontWeight::BOLD),
-            )
-            .child(line(e.description.clone(), width - 32.).text_color(theme::muted()))
-            .child(
-                panel()
+                div()
                     .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(field("Car", car_name))
-                    .child(field(
-                        "Track",
-                        format!(
-                            "{}{}",
-                            track_name,
-                            if e.layout.is_empty() {
-                                String::new()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(section_title("Session schedule").mt_0())
+                    .child(
+                        button(
+                            "toggle-event-config",
+                            if self.show_config {
+                                "Hide race config"
                             } else {
-                                format!(" / {}", e.layout)
-                            }
-                        ),
-                    ))
-                    .child(field("Weather", e.weather.clone()))
-                    .child(field(
-                        "Temperature",
-                        format!(
-                            "Air {}°C · Road {}°C",
-                            e.ambient
-                                .map(|v| v.to_string())
-                                .unwrap_or_else(|| "—".into()),
-                            e.road.map(|v| v.to_string()).unwrap_or_else(|| "—".into())
-                        ),
-                    ))
-                    .child(field(
-                        "Rules",
-                        format!(
-                            "Penalties {} · Fixed setup {}",
-                            if e.penalties { "on" } else { "off" },
-                            if e.fixed_setup { "on" } else { "off" }
-                        ),
-                    ))
-                    .child(field("AI strength", format!("{}%", e.ai_level))),
+                                "Show race config"
+                            },
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_config = !this.show_config;
+                            cx.notify();
+                        })),
+                    ),
             );
-        let mut sessions = panel()
+        if e.sessions.is_empty() {
+            sessions_card = sessions_card.child(
+                div()
+                    .text_sm()
+                    .text_color(theme::muted())
+                    .child("No sessions listed."),
+            );
+        } else {
+            for s in &e.sessions {
+                sessions_card = sessions_card.child(
+                    div()
+                        .py_1()
+                        .px_2()
+                        .rounded(px(theme::RADIUS_SM))
+                        .bg(theme::bg())
+                        .child(line(
+                            format!(
+                                "{} · {}{}{}",
+                                s.name,
+                                events::mode_label(s.kind),
+                                if s.laps > 0 {
+                                    format!(" · {} laps", s.laps)
+                                } else {
+                                    String::new()
+                                },
+                                if s.minutes > 0 {
+                                    format!(" · {} min", s.minutes)
+                                } else {
+                                    String::new()
+                                }
+                            ),
+                            (left_w - 40.).max(160.),
+                        )),
+                );
+            }
+        }
+
+        // Row 3 Right: Your progress card
+        let progress_card = panel()
+            .p_3()
+            .w(px(side_w))
             .flex()
             .flex_col()
             .gap_1()
-            .child(section_title("Session schedule"));
-        for s in &e.sessions {
-            sessions = sessions.child(line(
-                format!(
-                    "{} · {}{}{}",
-                    s.name,
-                    events::mode_label(s.kind),
-                    if s.laps > 0 {
-                        format!(" · {} laps", s.laps)
-                    } else {
-                        String::new()
-                    },
-                    if s.minutes > 0 {
-                        format!(" · {} min", s.minutes)
-                    } else {
-                        String::new()
-                    }
-                ),
-                width - 58.,
-            ));
-        }
-        body = body.child(sessions).child(
-            div().child(
-                button(
-                    "toggle-event-config",
-                    if self.show_config {
-                        "Hide race config"
-                    } else {
-                        "Show race config"
-                    },
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.show_config = !this.show_config;
-                    cx.notify();
-                })),
-            ),
-        );
+            .child(section_title("Your progress").mt_0())
+            .child(field("Best medal", medal(p.medal)))
+            .child(field(score_heading(e, false), score_display(e, &p, false)))
+            .child(field("Attempts", p.attempts.to_string()))
+            .when_some(p.last_position, |d, pos| {
+                d.child(field("Last finish", format!("Position {pos}")))
+            });
+
+        let row2 = if two_col {
+            div()
+                .flex()
+                .gap(px(col_gap))
+                .child(details_card)
+                .child(targets_card)
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(details_card)
+                .child(targets_card)
+        };
+
+        let row3 = if two_col {
+            div()
+                .flex()
+                .gap(px(col_gap))
+                .child(sessions_card)
+                .child(progress_card)
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(sessions_card)
+                .child(progress_card)
+        };
+
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .px(px(pad_x))
+            .py_3()
+            .w(px(width))
+            .child(hero_card)
+            .child(row2)
+            .child(row3);
+
         if self.show_config {
             let mut config = panel()
+                .p_3()
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(section_title("Event configuration (event.ini)"));
+                .child(section_title("Event configuration (event.ini)").mt_0());
             for sec in e.ini.sections() {
                 config = config.child(
-                    line(format!("[{}]", sec.name), width - 58.).text_color(theme::accent()),
+                    line(format!("[{}]", sec.name), avail_w - 24.).text_color(theme::accent()),
                 );
                 for (k, v) in sec.entries() {
                     config = config.child(
-                        line(format!("{k} = {v}"), width - 58.)
+                        line(format!("{k} = {v}"), avail_w - 24.)
                             .text_xs()
                             .text_color(theme::muted()),
                     );
@@ -2355,6 +2540,7 @@ impl EventsView {
             }
             body = body.child(config);
         }
+
         body.into_any_element()
     }
 
@@ -2468,14 +2654,38 @@ impl EventsView {
             || self.current_event().is_none();
         let disabled = blocked || unavailable.is_some();
 
+        let mut counts = [0usize; 3];
+        for e in &self.catalog.special {
+            let m = self.progress.get(&e.id).medal;
+            if (1..=3).contains(&m) {
+                counts[m as usize - 1] += 1;
+            }
+        }
+        let total = self.catalog.special.len();
+        let earned: usize = counts.iter().sum();
+
+        let footer_text = unavailable.as_ref().cloned().unwrap_or_else(|| {
+            "D-pad: select · A / Start: launch · X: difficulty".into()
+        });
         let footer = div()
             .flex()
             .items_center()
+            .justify_between()
             .gap_3()
-            .p_3()
+            .px_5()
+            .py_2()
             .flex_shrink_0()
             .border_t_1()
             .border_color(theme::border())
+            .bg(theme::surface())
+            .child(
+                line(footer_text, (detail_w - 240.).max(160.)).text_color(if unavailable.is_some()
+                {
+                    theme::error()
+                } else {
+                    theme::muted()
+                }),
+            )
             .child(
                 primary_button(
                     "event-start",
@@ -2489,13 +2699,7 @@ impl EventsView {
                 .when(!disabled, |d| {
                     d.on_click(cx.listener(|this, _, _, cx| this.start(cx)))
                 }),
-            )
-            .child(line(
-                unavailable.unwrap_or_else(|| {
-                    "D-pad: select · A / Start: launch · X: difficulty".into()
-                }),
-                (detail_w - 230.).max(160.),
-            ));
+            );
 
         div()
             .flex()
@@ -2506,36 +2710,90 @@ impl EventsView {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .p_4()
+                    .gap_4()
+                    .px_6()
+                    .py_3()
                     .flex_shrink_0()
                     .border_b_1()
                     .border_color(theme::border())
+                    .bg(theme::surface())
                     .child(
                         div()
                             .flex()
                             .flex_col()
-                            .gap_1()
+                            .gap_0p5()
+                            .min_w_0()
                             .child(
                                 div()
-                                    .text_xl()
-                                    .font_weight(FontWeight::BOLD)
-                                    .child("Special Events"),
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_xl()
+                                            .font_weight(FontWeight::BOLD)
+                                            .child("Special Events"),
+                                    )
+                                    .child(badge(
+                                        format!("{total} events"),
+                                        theme::muted(),
+                                        theme::raised(),
+                                    )),
                             )
                             .child(
-                                line(self.overview(), main_w - 230.).text_color(theme::muted()),
+                                line(events::import_notice(), (main_w - 460.).max(200.))
+                                    .text_xs()
+                                    .text_color(theme::muted()),
                             ),
                     )
                     .child(
-                        button("events-refresh", "Refresh")
-                            .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_4()
+                            .flex_shrink_0()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .items_end()
+                                    .gap_0p5()
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(theme::text())
+                                            .child(format!("{earned} / {total} earned")),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_3()
+                                            .text_xs()
+                                            .font_weight(FontWeight::BOLD)
+                                            .child(
+                                                div()
+                                                    .text_color(medal_color(3))
+                                                    .child(format!("Gold {}", counts[2])),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_color(medal_color(2))
+                                                    .child(format!("Silver {}", counts[1])),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_color(medal_color(1))
+                                                    .child(format!("Bronze {}", counts[0])),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                button("events-refresh", "Refresh")
+                                    .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
+                            ),
                     ),
-            )
-            .child(
-                line(events::import_notice(), main_w - 32.)
-                    .px_4()
-                    .py_1()
-                    .text_color(theme::muted())
-                    .text_xs(),
             )
             .child(self.render_banners(main_w))
             .child(
