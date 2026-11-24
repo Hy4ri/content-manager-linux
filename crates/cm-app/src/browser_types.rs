@@ -35,7 +35,6 @@ pub struct BrowserSnapshot {
     pub can_go_back: bool,
     pub can_go_forward: bool,
     pub error: Option<String>,
-    pub downloads: Vec<BrowserDownload>,
 }
 
 /// CEF-compatible event flags, kept engine-independent for the GPUI view.

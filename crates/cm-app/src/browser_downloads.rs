@@ -157,9 +157,25 @@ pub fn target_download_path(id: u32, suggested_name: &str) -> std::io::Result<Pa
     }
 }
 
-/// Updates or records an item in the download list.
-pub fn upsert_download_record(
-    downloads: &mut Vec<BrowserDownload>,
+/// One download list for the whole process, so every browser tab shows the same
+/// progress no matter which tab started the transfer.
+static DOWNLOADS: LazyLock<Mutex<Vec<BrowserDownload>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Returns a copy of every download that has not been dismissed.
+pub fn shared_downloads() -> Vec<BrowserDownload> {
+    DOWNLOADS.lock().map(|list| list.clone()).unwrap_or_default()
+}
+
+/// Removes a finished, cancelled or interrupted download from every tab's list.
+/// In-flight downloads stay listed until CEF reports a terminal state.
+pub fn dismiss_download(id: u32) {
+    if let Ok(mut list) = DOWNLOADS.lock() {
+        list.retain(|d| d.id != id || d.status == DownloadStatus::Downloading);
+    }
+}
+
+/// Updates or records an item in the shared download list.
+pub fn record_download(
     id: u32,
     name: String,
     path: PathBuf,
@@ -167,6 +183,9 @@ pub fn upsert_download_record(
     total_bytes: i64,
     status: DownloadStatus,
 ) {
+    let Ok(mut downloads) = DOWNLOADS.lock() else {
+        return;
+    };
     if let Some(pos) = downloads.iter().position(|d| d.id == id) {
         downloads[pos].received_bytes = received_bytes;
         downloads[pos].total_bytes = total_bytes;
@@ -177,7 +196,8 @@ pub fn upsert_download_record(
         if !path.as_os_str().is_empty() {
             downloads[pos].path = path;
         }
-    } else {
+    } else if status == DownloadStatus::Downloading || !name.is_empty() {
+        // A late terminal update for a dismissed item must not resurrect it.
         downloads.push(BrowserDownload {
             id,
             name,
