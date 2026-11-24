@@ -1492,13 +1492,13 @@ impl CmApp {
             conflicts.extend(c.pad_conflicts(b));
             let pad_capturing = self.pad_capturing == Some(i);
             let pad = c.pad(b);
-            let pad_cell = match b.pad_axis() {
-                Some(axis) => div()
+            let pad_cell = match b.pad_note() {
+                Some(note) => div()
                     .w(px(200.))
                     .px_3()
                     .text_sm()
                     .text_color(theme::muted())
-                    .child(format!("{axis} (automatic)"))
+                    .child(note)
                     .into_any_element(),
                 None => div()
                     .flex()
