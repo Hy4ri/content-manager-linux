@@ -328,6 +328,7 @@ fn two_lines(
 
 const INSTALL_MAX_W: f32 = 760.;
 const SETTINGS_MAX_W: f32 = 860.;
+
 /// Horizontal space a `panel()` takes from its content: `p_3` on both sides plus the border.
 const PANEL_INSET: f32 = 2. * 12. + 2.;
 
@@ -339,6 +340,10 @@ const PANEL_INSET: f32 = 2. * 12. + 2.;
 /// follows. A definite pixel width makes the first measurement the right one.
 fn text_w(main_w: f32, max_w: f32) -> f32 {
     (main_w.min(max_w) - 2. * 16.).max(120.)
+}
+
+fn settings_column() -> Div {
+    div().w_full().max_w(px(SETTINGS_MAX_W)).mx_auto().px_4()
 }
 
 /// A text input that takes the remaining width of a row.
@@ -1524,17 +1529,21 @@ impl CmApp {
             let msg = self.game_error.clone().unwrap_or_else(|| "Loading…".into());
             return div()
                 .id("game")
-                .p_4()
-                .flex()
-                .flex_col()
-                .gap_2()
+                .size_full()
                 .child(
-                    div()
-                        .text_xl()
-                        .font_weight(FontWeight::BOLD)
-                        .child("Game settings"),
-                )
-                .child(div().text_sm().text_color(theme::error()).child(msg));
+                    settings_column()
+                        .py_4()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xl()
+                                .font_weight(FontWeight::BOLD)
+                                .child("Game settings"),
+                        )
+                        .child(div().text_sm().text_color(theme::error()).child(msg)),
+                );
         };
 
         let tabs = segmented(
@@ -1607,15 +1616,11 @@ impl CmApp {
         }
 
         let dirty = c.dirty_files();
-        let footer = div()
+        let footer = settings_column()
             .flex()
             .items_center()
             .gap_3()
-            .px_4()
             .py_2()
-            .border_t_1()
-            .border_color(theme::border())
-            .bg(theme::sidebar())
             .child(
                 div()
                     .flex_1()
@@ -1655,13 +1660,11 @@ impl CmApp {
                     .min_h_0()
                     .overflow_y_scroll()
                     .child(
-                        div()
+                        settings_column()
                             .flex()
                             .flex_col()
                             .gap_3()
-                            .p_4()
-                            .w_full()
-                            .max_w(px(SETTINGS_MAX_W))
+                            .py_4()
                             .child(
                                 div()
                                     .text_xl()
@@ -1672,7 +1675,13 @@ impl CmApp {
                             .children(panels),
                     ),
             )
-            .child(footer)
+            .child(
+                div()
+                    .border_t_1()
+                    .border_color(theme::border())
+                    .bg(theme::sidebar())
+                    .child(footer),
+            )
     }
 
     // ---------- views ----------
@@ -3505,13 +3514,11 @@ impl CmApp {
             ));
 
         div().id("settings").size_full().overflow_y_scroll().child(
-            div()
+            settings_column()
                 .flex()
                 .flex_col()
                 .gap_3()
-                .p_4()
-                .w_full()
-                .max_w(px(SETTINGS_MAX_W))
+                .py_4()
                 .child(
                     div()
                         .text_xl()
