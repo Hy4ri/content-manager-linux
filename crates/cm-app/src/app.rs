@@ -22,6 +22,7 @@ use crate::browser_tabs::BrowserTabs as BrowserView;
 use crate::browser_view::PreviewDownload;
 use crate::content_sort::{CarSort, TrackSort};
 use crate::events_view::{EventsView, Running};
+use crate::csp_view::CspView;
 use crate::mods_view::{ModsChanged, ModsNavigate, ModsTarget, ModsView};
 use crate::nav::NavAction;
 use crate::text_input::TextInput;
@@ -42,6 +43,7 @@ enum Page {
     InstalledMods,
     Browser,
     Game,
+    Csp,
     Settings,
 }
 
@@ -54,7 +56,7 @@ const TABS: [(&str, &[Page]); 7] = [
     ("Career", &[Page::Career]),
     ("Events", &[Page::SpecialEvents]),
     ("Mods", &[Page::Browser, Page::Install, Page::InstalledMods]),
-    ("Settings", &[Page::Game, Page::Settings]),
+    ("Settings", &[Page::Game, Page::Csp, Page::Settings]),
 ];
 
 fn page_label(page: Page) -> &'static str {
@@ -63,6 +65,7 @@ fn page_label(page: Page) -> &'static str {
         Page::Install => "Install",
         Page::InstalledMods => "Installed",
         Page::Game => "Game",
+        Page::Csp => "CSP",
         Page::Settings => "App",
         Page::QuickDrive => "Drive",
         Page::Cars => "Garage",
@@ -277,6 +280,7 @@ pub struct CmApp {
     browser: Option<Entity<BrowserView>>,
     events: Option<Entity<EventsView>>,
     mods_view: Option<Entity<ModsView>>,
+    csp_view: Option<Entity<CspView>>,
 
     car: Option<usize>,
     skin: usize,
@@ -510,6 +514,7 @@ impl CmApp {
             browser: None,
             events: None,
             mods_view: None,
+            csp_view: None,
             settings,
             ac_root,
             content: Arc::default(),
@@ -844,6 +849,7 @@ impl CmApp {
         if changed {
             self.game_cfg = None;
             self.mods_view = None;
+            self.csp_view = None;
         }
         self.set_status("Settings saved.", false, cx);
         if changed {
@@ -1825,6 +1831,22 @@ impl CmApp {
         }
     }
 
+    fn ensure_csp(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.ac_root.clone() else { return };
+        if self.csp_view.as_ref().is_some_and(|v| v.read(cx).root != root) {
+            self.csp_view = None;
+        }
+        let device = self.input_device;
+        match &self.csp_view {
+            Some(view) => view.update(cx, |v, cx| v.set_input_device(device, cx)),
+            None => {
+                let view = cx.new(|cx| CspView::new(root, cx));
+                view.update(cx, |v, cx| v.set_input_device(device, cx));
+                self.csp_view = Some(view);
+            }
+        }
+    }
+
     fn goto_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(page, Page::Career | Page::SpecialEvents) {
             self.ensure_events(page == Page::Career, cx);
@@ -1834,6 +1856,9 @@ impl CmApp {
         }
         if page == Page::Browser {
             self.ensure_browser(window, cx);
+        }
+        if page == Page::Csp {
+            self.ensure_csp(cx);
         }
         if let Some(browser) = &self.browser {
             browser.update(cx, |browser, cx| browser.set_active(page == Page::Browser, cx));
@@ -1900,6 +1925,18 @@ impl CmApp {
                 .events
                 .as_ref()
                 .is_some_and(|events| events.update(cx, |view, cx| view.pad(name, cx)));
+            if handled || name != "B" {
+                return;
+            }
+        }
+        if self.page == Page::Csp && !matches!(name, "LSHOULDER" | "RSHOULDER" | "LTRIGGER" | "RTRIGGER") {
+            let device = self.input_device;
+            let handled = self.csp_view.as_ref().is_some_and(|csp| {
+                csp.update(cx, |view, cx| {
+                    view.set_input_device(device, cx);
+                    view.pad(name, cx)
+                })
+            });
             if handled || name != "B" {
                 return;
             }
@@ -2070,6 +2107,15 @@ impl CmApp {
                 hints.push(h(NavAction::Up, "Move"));
                 hints.push(h(NavAction::Confirm, "Enable / Disable"));
                 hints.push(h(NavAction::Secondary, "Open folder"));
+                hints.push(h(NavAction::Back, "Back"));
+            }
+            Page::Csp => {
+                hints.push(h(NavAction::SubPrev, "Prev page"));
+                hints.push(h(NavAction::SubNext, "Next page"));
+                hints.push(h(NavAction::Up, "Move"));
+                hints.push(h(NavAction::Left, "Change"));
+                hints.push(h(NavAction::Confirm, "Open / Toggle"));
+                hints.push(h(NavAction::Primary, "Save"));
                 hints.push(h(NavAction::Back, "Back"));
             }
             Page::Install | Page::Game | Page::Settings => {
@@ -2540,10 +2586,19 @@ impl CmApp {
         if self.capturing.is_some() || self.pad_capturing.is_some() {
             return;
         }
-        if self.picker.is_none() && !matches!(self.page, Page::QuickDrive | Page::Cars | Page::Tracks) {
+        if self.picker.is_none() && !matches!(self.page, Page::QuickDrive | Page::Cars | Page::Tracks | Page::Csp) {
             return;
         }
         let key = e.keystroke.key.as_str();
+        // Typing into a CSP text field is not navigation; Esc hands focus back.
+        if self.page == Page::Csp && self.csp_view.as_ref().is_some_and(|v| v.read(cx).input_focused(window, cx)) {
+            if key == "escape" {
+                window.focus(&self.root_focus);
+                cx.stop_propagation();
+                cx.notify();
+            }
+            return;
+        }
         if self.car_filter.read(cx).is_focused(window) || self.track_filter.read(cx).is_focused(window) {
             if matches!(key, "escape" | "down" | "enter") {
                 window.focus(&self.root_focus);
@@ -4264,6 +4319,15 @@ impl Render for CmApp {
                 Page::Game => self
                     .game_page(text_w(main_w, SETTINGS_MAX_W), cx)
                     .into_any_element(),
+                Page::Csp => match &self.csp_view {
+                    Some(view) => div().size_full().child(view.clone()).into_any_element(),
+                    None => div()
+                        .p_4()
+                        .text_sm()
+                        .text_color(theme::muted())
+                        .child("Set your Assetto Corsa folder in Settings to configure Custom Shaders Patch.")
+                        .into_any_element(),
+                },
                 Page::Settings => self
                     .settings_page(text_w(main_w, SETTINGS_MAX_W), cx)
                     .into_any_element(),
@@ -4291,6 +4355,9 @@ impl Render for CmApp {
                     this.input_device = crate::nav::InputDevice::Mouse;
                     if let Some(mods_view) = &this.mods_view {
                         mods_view.update(cx, |v, cx| v.set_input_device(crate::nav::InputDevice::Mouse, cx));
+                    }
+                    if let Some(csp_view) = &this.csp_view {
+                        csp_view.update(cx, |v, cx| v.set_input_device(crate::nav::InputDevice::Mouse, cx));
                     }
                     cx.notify();
                 }

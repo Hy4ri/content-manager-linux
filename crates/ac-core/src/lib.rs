@@ -9,6 +9,7 @@ pub mod ai_line;
 pub mod bookmarks;
 pub mod browser_session;
 pub mod content;
+pub mod csp;
 pub mod events;
 pub mod game_cfg;
 #[cfg(target_os = "linux")]
