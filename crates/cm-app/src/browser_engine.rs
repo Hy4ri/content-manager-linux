@@ -3,10 +3,10 @@
 //! Provides the global CEF lifecycle, message pumping, offscreen software
 //! BGRA rendering, input dispatch, navigation, and native download tracking.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -14,7 +14,7 @@ use cef::rc::Rc;
 // CEF wrapper macros require the generated Impl/Wrap traits in scope.
 use cef::{args::Args, *};
 
-use crate::browser_downloads::{finish_download, target_download_path, upsert_download_record};
+use crate::browser_downloads::{finish_download, record_download, target_download_path};
 use crate::browser_types::{
     BrowserFrame, BrowserKey, BrowserModifiers, BrowserMouseButton, BrowserSnapshot, DownloadStatus,
 };
@@ -30,6 +30,24 @@ static ENGINE_REGISTRY: OnceLock<Mutex<Vec<Arc<EngineInner>>>> = OnceLock::new()
 
 fn get_engine_registry() -> &'static Mutex<Vec<Arc<EngineInner>>> {
     ENGINE_REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Cancel handles for in-flight downloads, shared so any tab can cancel a
+/// download another tab started. CEF download ids are unique per browser
+/// context, and every tab uses the global context.
+static DOWNLOAD_CALLBACKS: LazyLock<Mutex<HashMap<u32, DownloadItemCallback>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Requests cancellation of an in-flight download, whichever tab started it.
+pub fn cancel_download(id: u32) {
+    let callback = DOWNLOAD_CALLBACKS
+        .lock()
+        .ok()
+        .and_then(|mut map| map.remove(&id));
+    if let Some(callback) = callback {
+        callback.cancel();
+    }
+    // Only CEF's terminal callback can declare cancellation successful.
 }
 
 /// Dispatches CEF child process execution when invoked by Chromium helper processes.
@@ -189,7 +207,7 @@ impl BrowserRuntime {
                 .map(|mut registry| registry.drain(..).collect())
                 .unwrap_or_default();
             for inner in &engines {
-                inner.close();
+                inner.force_close();
             }
             let deadline = std::time::Instant::now() + Duration::from_secs(2);
             while engines.iter().any(|inner| inner.browser_handle().is_some()) {
@@ -200,10 +218,8 @@ impl BrowserRuntime {
                 }
                 std::thread::sleep(Duration::from_millis(4));
             }
-            for inner in &engines {
-                if let Ok(mut callbacks) = inner.download_callbacks.lock() {
-                    callbacks.clear();
-                }
+            if let Ok(mut callbacks) = DOWNLOAD_CALLBACKS.lock() {
+                callbacks.clear();
             }
             shutdown();
         }
@@ -218,7 +234,11 @@ pub struct EngineInner {
     view_width: Mutex<u32>,
     view_height: Mutex<u32>,
     scale_factor: Mutex<f32>,
-    download_callbacks: Mutex<HashMap<u32, DownloadItemCallback>>,
+    /// Downloads this browser started that have not reached a terminal state.
+    in_flight: Mutex<HashSet<u32>>,
+    /// The tab is gone but the browser stays alive, hidden, until `in_flight`
+    /// drains: CEF stops reporting a download once its browser is destroyed.
+    close_when_idle: AtomicBool,
     is_closed: AtomicBool,
     new_tabs: Mutex<Vec<String>>,
 }
@@ -236,7 +256,8 @@ impl EngineInner {
             view_width: Mutex::new(1280),
             view_height: Mutex::new(800),
             scale_factor: Mutex::new(1.0),
-            download_callbacks: Mutex::new(HashMap::new()),
+            in_flight: Mutex::new(HashSet::new()),
+            close_when_idle: AtomicBool::new(false),
             is_closed: AtomicBool::new(false),
             new_tabs: Mutex::new(Vec::new()),
         }
@@ -246,7 +267,21 @@ impl EngineInner {
         self.browser.lock().ok().and_then(|guard| guard.clone())
     }
 
+    /// Closes the browser once its downloads finish; closing a tab must not
+    /// orphan a transfer that other tabs are still showing.
     fn close(&self) {
+        let busy = self.in_flight.lock().map(|set| !set.is_empty()).unwrap_or(false);
+        if busy {
+            self.close_when_idle.store(true, Ordering::SeqCst);
+            if let Some(host) = self.browser_handle().and_then(|browser| browser.host()) {
+                host.was_hidden(1);
+            }
+            return;
+        }
+        self.force_close();
+    }
+
+    fn force_close(&self) {
         if self.is_closed.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -487,8 +522,17 @@ wrap_life_span_handler! {
             if let Ok(mut registry) = get_engine_registry().lock() {
                 registry.retain(|inner| !Arc::ptr_eq(inner, &self.inner));
             }
-            if let Ok(mut callbacks) = self.inner.download_callbacks.lock() {
-                callbacks.clear();
+            // CEF continues these silently with no further updates, so stop
+            // them rather than leave rows stuck at "downloading".
+            let orphaned: Vec<u32> = self
+                .inner
+                .in_flight
+                .lock()
+                .map(|mut set| set.drain().collect())
+                .unwrap_or_default();
+            for id in orphaned {
+                cancel_download(id);
+                record_download(id, String::new(), PathBuf::new(), 0, 0, DownloadStatus::Cancelled);
             }
         }
     }
@@ -534,18 +578,17 @@ wrap_download_handler! {
                 let dest_str = dest.to_string_lossy().to_string();
                 let cef_path = CefString::from(dest_str.as_str());
 
-                // Record initial state
-                if let Ok(mut snap) = self.inner.snapshot.lock() {
-                    upsert_download_record(
-                        &mut snap.downloads,
-                        id,
-                        name,
-                        dest,
-                        item.received_bytes(),
-                        item.total_bytes(),
-                        DownloadStatus::Downloading,
-                    );
+                if let Ok(mut set) = self.inner.in_flight.lock() {
+                    set.insert(id);
                 }
+                record_download(
+                    id,
+                    name,
+                    dest,
+                    item.received_bytes(),
+                    item.total_bytes(),
+                    DownloadStatus::Downloading,
+                );
 
                 // Continue download without showing system file dialog (0 = no dialog)
                 cb.cont(Some(&cef_path), 0);
@@ -562,12 +605,6 @@ wrap_download_handler! {
             if let Some(item) = download_item {
                 let id = item.id();
 
-                if let Some(cb) = callback {
-                    if let Ok(mut map) = self.inner.download_callbacks.lock() {
-                        map.insert(id, cb.clone());
-                    }
-                }
-
                 let status = if item.is_complete() != 0 {
                     DownloadStatus::Complete
                 } else if item.is_canceled() != 0 {
@@ -578,26 +615,41 @@ wrap_download_handler! {
                     DownloadStatus::Downloading
                 };
 
+                if status == DownloadStatus::Downloading
+                    && let Some(cb) = callback
+                    && let Ok(mut map) = DOWNLOAD_CALLBACKS.lock()
+                {
+                    map.insert(id, cb.clone());
+                }
+
                 let path_buf = PathBuf::from(CefString::from(&item.full_path()).to_string());
                 if status == DownloadStatus::Complete || status == DownloadStatus::Cancelled {
                     finish_download(&path_buf);
                 }
+                record_download(
+                    id,
+                    String::new(),
+                    path_buf,
+                    item.received_bytes(),
+                    item.total_bytes(),
+                    status.clone(),
+                );
                 if status != DownloadStatus::Downloading {
-                    if let Ok(mut callbacks) = self.inner.download_callbacks.lock() {
+                    if let Ok(mut callbacks) = DOWNLOAD_CALLBACKS.lock() {
                         callbacks.remove(&id);
                     }
-                }
-
-                if let Ok(mut snap) = self.inner.snapshot.lock() {
-                    upsert_download_record(
-                        &mut snap.downloads,
-                        id,
-                        String::new(),
-                        path_buf,
-                        item.received_bytes(),
-                        item.total_bytes(),
-                        status,
-                    );
+                    let idle = self
+                        .inner
+                        .in_flight
+                        .lock()
+                        .map(|mut set| {
+                            set.remove(&id);
+                            set.is_empty()
+                        })
+                        .unwrap_or(true);
+                    if idle && self.inner.close_when_idle.load(Ordering::SeqCst) {
+                        self.inner.force_close();
+                    }
                 }
             }
         }
@@ -890,19 +942,6 @@ impl BrowserEngine {
                 }
             }
         }
-    }
-
-    pub fn cancel_download(&self, id: u32) {
-        let callback = self
-            .inner
-            .download_callbacks
-            .lock()
-            .ok()
-            .and_then(|mut map| map.remove(&id));
-        if let Some(callback) = callback {
-            callback.cancel();
-        }
-        // Only CEF's terminal callback can declare cancellation successful.
     }
 
     pub fn close(&self) {

@@ -51,7 +51,8 @@ pub struct BrowserView {
     current_scale: f32,
     error: Option<String>,
     refresh_task: Option<Task<()>>,
-    dismissed_download_ids: HashSet<u32>,
+    /// Copy of the process-wide download list, shared by every tab.
+    downloads: Vec<BrowserDownload>,
     active_mouse_buttons: HashSet<MouseButton>,
     active: bool,
     bookmarks: Vec<Bookmark>,
@@ -95,7 +96,7 @@ impl BrowserView {
             current_scale: 1.0,
             error: None,
             refresh_task: None,
-            dismissed_download_ids: HashSet::new(),
+            downloads: crate::browser_downloads::shared_downloads(),
             active_mouse_buttons: HashSet::new(),
             active: true,
             bookmarks: Vec::new(),
@@ -224,11 +225,20 @@ impl BrowserView {
     }
 
     fn tick(&mut self, cx: &mut Context<Self>) {
+        // Downloads are polled even without an engine so every tab, including
+        // one that failed to start, shows transfers started elsewhere.
+        let downloads = crate::browser_downloads::shared_downloads();
+        let mut needs_notify = downloads_changed(&downloads, &self.downloads);
+        if needs_notify {
+            self.downloads = downloads;
+        }
+
         let Some(engine) = &self.engine else {
+            if needs_notify {
+                cx.notify();
+            }
             return;
         };
-
-        let mut needs_notify = false;
 
         // Fetch latest frame if available
         if let Some(frame) = engine.take_frame() {
@@ -249,8 +259,6 @@ impl BrowserView {
             || new_snapshot.can_go_back != self.snapshot.can_go_back
             || new_snapshot.can_go_forward != self.snapshot.can_go_forward
             || new_snapshot.error != self.snapshot.error
-            || new_snapshot.downloads.len() != self.snapshot.downloads.len()
-            || downloads_changed(&new_snapshot.downloads, &self.snapshot.downloads)
         {
             if new_snapshot.url != self.snapshot.url && !new_snapshot.url.is_empty() {
                 let url_copy = if new_snapshot.url == DEFAULT_BROWSER_URL {
@@ -379,14 +387,13 @@ impl BrowserView {
     }
 
     fn cancel_download(&mut self, id: u32, cx: &mut Context<Self>) {
-        if let Some(engine) = &self.engine {
-            engine.cancel_download(id);
-            cx.notify();
-        }
+        crate::browser_engine::cancel_download(id);
+        cx.notify();
     }
 
     fn dismiss_download(&mut self, id: u32, cx: &mut Context<Self>) {
-        self.dismissed_download_ids.insert(id);
+        crate::browser_downloads::dismiss_download(id);
+        self.downloads.retain(|d| d.id != id || d.status == DownloadStatus::Downloading);
         cx.notify();
     }
 
@@ -939,13 +946,7 @@ impl Render for BrowserView {
         };
 
         // Downloads bar / list
-        let active_downloads: Vec<BrowserDownload> = self
-            .snapshot
-            .downloads
-            .iter()
-            .filter(|dl| !self.dismissed_download_ids.contains(&dl.id))
-            .cloned()
-            .collect();
+        let active_downloads = self.downloads.clone();
 
         let downloads_bar = if active_downloads.is_empty() {
             None
