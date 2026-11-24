@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ac-core"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -1030,7 +1030,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "cm-app"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "ac-core",
  "anyhow",
