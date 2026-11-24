@@ -1,5 +1,6 @@
 //! The main window: Quick Drive, Cars, Tracks, Install and Settings pages.
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -98,6 +99,17 @@ enum PickerKind {
 const PICK_CARD_MIN_W: f32 = 200.;
 const PICK_CARD_H: f32 = 176.;
 const PICK_ROW_H: f32 = PICK_CARD_H + 12.;
+const BRAND_CARD_H: f32 = 104.;
+
+fn grid_step(name: &str, pos: usize, len: usize, cols: usize) -> Option<usize> {
+    match name {
+        "DPAD_UP" if pos >= cols => Some(pos - cols),
+        "DPAD_DOWN" if pos + cols < len => Some(pos + cols),
+        "DPAD_LEFT" if pos > 0 => Some(pos - 1),
+        "DPAD_RIGHT" if pos + 1 < len => Some(pos + 1),
+        _ => None,
+    }
+}
 
 /// Columns and card width that fill a picker grid of `viewport_w` (24 px side padding, 12 px gaps).
 fn picker_geometry(viewport_w: f32) -> (usize, f32) {
@@ -142,21 +154,39 @@ enum ModeKind {
     Race,
 }
 
+struct CarBrand {
+    name: String,
+    badge: Option<PathBuf>,
+}
+
 #[derive(Default)]
 struct Content {
     cars: Vec<Car>,
     tracks: Vec<TrackEntry>,
     weather: Vec<Weather>,
     car_search: Vec<String>,
-    car_brands: Vec<(String, usize)>,
+    car_brands: Vec<CarBrand>,
     track_search: Vec<String>,
 }
 
 impl Content {
     fn scan(root: &std::path::Path) -> Self {
         let cars = content::scan_cars(root);
-        let mut car_brands: Vec<_> = content::brands(&cars).into_iter().collect();
-        car_brands.sort_by(|(a, _), (b, _)| content::natural_cmp(a, b));
+        let mut brands = BTreeMap::new();
+        for car in &cars {
+            let name = car.brand_name();
+            let brand = brands
+                .entry(name.to_lowercase())
+                .or_insert_with(|| CarBrand {
+                    name: name.to_owned(),
+                    badge: None,
+                });
+            if brand.badge.is_none() {
+                brand.badge.clone_from(&car.badge);
+            }
+        }
+        let mut car_brands: Vec<_> = brands.into_values().collect();
+        car_brands.sort_by(|a, b| content::natural_cmp(&a.name, &b.name));
         let tracks = content::track_entries(&content::scan_tracks(root));
         Content {
             car_search: cars.iter().map(|c| c.search_text()).collect(),
@@ -206,6 +236,8 @@ pub struct CmApp {
     /// Last device that produced input; decides hint glyphs and focus-ring visibility.
     input_device: crate::nav::InputDevice,
     car_brand: Option<String>,
+    brand_menu_focus: Option<usize>,
+    brand_menu_scroll: UniformListScrollHandle,
     tracks_view: Vec<usize>,
     car_sort: CarSort,
     track_sort: TrackSort,
@@ -416,6 +448,8 @@ impl CmApp {
             picker_card_w: PICK_CARD_MIN_W,
             input_device: crate::nav::InputDevice::default(),
             car_brand: None,
+            brand_menu_focus: None,
+            brand_menu_scroll: UniformListScrollHandle::new(),
             tracks_view: Vec::new(),
             car_sort: CarSort::default(),
             track_sort: TrackSort::default(),
@@ -538,7 +572,7 @@ impl CmApp {
                 .content
                 .car_brands
                 .iter()
-                .any(|(name, _)| name.to_lowercase() == b.to_lowercase())
+                .any(|brand| brand.name.to_lowercase() == b.to_lowercase())
         {
             self.car_brand = None;
         }
@@ -2036,35 +2070,72 @@ impl CmApp {
         self.refilter(cx);
     }
 
-    /// Steps the brand filter through All → each brand → All.
-    fn cycle_picker_brand(&mut self, dir: i32, cx: &mut Context<Self>) {
-        let brands = &self.content.car_brands;
-        let at = self
-            .car_brand
-            .as_ref()
-            .and_then(|b| brands.iter().position(|(n, _)| n.to_lowercase() == b.to_lowercase()))
-            .map_or(0, |i| i as i32 + 1);
-        let next = (at + dir).rem_euclid(brands.len() as i32 + 1);
-        self.car_brand = (next > 0).then(|| brands[next as usize - 1].0.clone());
+    fn selected_brand_pos(&self) -> usize {
+        self.car_brand.as_ref().map_or(0, |name| {
+            let key = name.to_lowercase();
+            self.content
+                .car_brands
+                .iter()
+                .position(|brand| brand.name.to_lowercase() == key)
+                .map_or(0, |pos| pos + 1)
+        })
+    }
+
+    fn open_brand_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pos = self.selected_brand_pos();
+        self.brand_menu_focus = Some(pos);
+        self.brand_menu_scroll
+            .scroll_to_item(pos / self.picker_cols, ScrollStrategy::Center);
+        self.focus_root(window);
+        cx.notify();
+    }
+
+    fn select_brand(&mut self, brand: Option<String>, cx: &mut Context<Self>) {
+        self.brand_menu_focus = None;
+        if self.car_brand == brand {
+            cx.notify();
+            return;
+        }
+        self.car_brand = brand;
         self.picker_focus = 0;
         self.picker_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.refilter(cx);
     }
 
+    fn brand_menu_press(&mut self, name: &str, pos: usize, cx: &mut Context<Self>) {
+        let len = self.content.car_brands.len() + 1; // All brands is first.
+        let pos = pos.min(len - 1);
+        if let Some(next) = grid_step(name, pos, len, self.picker_cols) {
+            self.brand_menu_focus = Some(next);
+            self.brand_menu_scroll
+                .scroll_to_item(next / self.picker_cols, ScrollStrategy::Center);
+        } else if name == "A" {
+            self.select_brand(self.brand_at(pos).map(|brand| brand.name.clone()), cx);
+        } else if matches!(name, "B" | "LTRIGGER" | "RTRIGGER") {
+            self.brand_menu_focus = None;
+        }
+    }
+
+    fn brand_at(&self, pos: usize) -> Option<&CarBrand> {
+        pos.checked_sub(1)
+            .and_then(|i| self.content.car_brands.get(i))
+    }
+
     fn picker_press(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(pos) = self.brand_menu_focus {
+            self.brand_menu_press(name, pos, cx);
+            return;
+        }
         let kind = self.picker.unwrap_or(PickerKind::Car);
         let len = self.picker_view().len();
         let cols = self.picker_cols.max(1);
         let at = self.picker_focus.min(len.saturating_sub(1));
-        let moved = |to: usize, this: &mut Self| {
-            this.picker_focus = to.min(len.saturating_sub(1));
-            this.picker_scroll.scroll_to_item(this.picker_focus / cols, ScrollStrategy::Center);
-        };
+        if let Some(next) = grid_step(name, at, len, cols) {
+            self.picker_focus = next;
+            self.picker_scroll.scroll_to_item(next / cols, ScrollStrategy::Center);
+            return;
+        }
         match name {
-            "DPAD_UP" if at >= cols => moved(at - cols, self),
-            "DPAD_DOWN" if at + cols < len => moved(at + cols, self),
-            "DPAD_LEFT" if at > 0 => moved(at - 1, self),
-            "DPAD_RIGHT" if at + 1 < len => moved(at + 1, self),
             "A" => {
                 if let Some(&ix) = self.picker_view().get(at) {
                     self.pick(kind, ix, cx);
@@ -2076,8 +2147,7 @@ impl CmApp {
                 input.read(cx).focus(window);
             }
             "X" => self.cycle_picker_sort(cx),
-            "LTRIGGER" if kind == PickerKind::Car => self.cycle_picker_brand(-1, cx),
-            "RTRIGGER" if kind == PickerKind::Car => self.cycle_picker_brand(1, cx),
+            "LTRIGGER" | "RTRIGGER" if kind == PickerKind::Car => self.open_brand_menu(window, cx),
             _ => {}
         }
     }
@@ -2407,10 +2477,123 @@ impl CmApp {
         .child(two_lines(title, sub, Some(w - 28.)))
     }
 
+    fn brand_card(
+        &self,
+        pos: usize,
+        selected: usize,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let brand = self.brand_at(pos);
+        let label = brand.map_or("All brands", |brand| brand.name.as_str());
+        let choice = brand.map(|brand| brand.name.clone());
+        let w = self.picker_card_w;
+        focus_ring(
+            div()
+                .id(("brand-card", pos))
+                .w(px(w))
+                .h(px(BRAND_CARD_H))
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .p_2()
+                .rounded(px(theme::RADIUS_MD))
+                .cursor_pointer()
+                .when(pos == selected, |d| d.bg(theme::overlay()))
+                .when(pos != selected, |d| {
+                    d.bg(theme::surface()).hover(|s| s.bg(theme::raised()))
+                }),
+            self.input_device.shows_focus() && self.brand_menu_focus == Some(pos),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| this.select_brand(choice.clone(), cx)))
+        .when_some(brand.and_then(|brand| brand.badge.clone()), |d, badge| {
+            d.child(picture(Some(badge), 54.).w_full())
+        })
+        .child(
+            div()
+                .w(px(w - 24.))
+                .text_center()
+                .truncate()
+                .child(label.to_owned()),
+        )
+    }
+
+    fn brand_menu(&self, cx: &mut Context<Self>) -> Div {
+        let cols = self.picker_cols;
+        let len = self.content.car_brands.len() + 1;
+        let grid = uniform_list(
+            "brand-grid",
+            len.div_ceil(cols),
+            cx.processor(|this, range: Range<usize>, _, cx| {
+                let cols = this.picker_cols;
+                let len = this.content.car_brands.len() + 1;
+                let selected = this.selected_brand_pos();
+                range
+                    .map(|row| {
+                        let mut tiles = div()
+                            .id(("brand-row", row))
+                            .flex()
+                            .gap_3()
+                            .h(px(BRAND_CARD_H + 12.))
+                            .w_full();
+                        for pos in row * cols..((row + 1) * cols).min(len) {
+                            tiles = tiles.child(this.brand_card(pos, selected, cx));
+                        }
+                        tiles
+                    })
+                    .collect()
+            }),
+        )
+        .track_scroll(self.brand_menu_scroll.clone())
+        .flex_1()
+        .px_6();
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_6()
+                    .h(px(72.))
+                    .flex_shrink_0()
+                    .border_b_1()
+                    .border_color(theme::border())
+                    .child(
+                        div()
+                            .text_xl()
+                            .font_weight(FontWeight::BOLD)
+                            .child("Choose a brand"),
+                    )
+                    .child(button("brand-menu-back", "Back").on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.brand_menu_focus = None;
+                            cx.notify();
+                        },
+                    ))),
+            )
+            .child(div().h(px(12.)).flex_shrink_0())
+            .child(grid)
+            .child(hint_bar(
+                vec![
+                    hint(self.input_device.label(NavAction::Confirm), "Filter"),
+                    hint(self.input_device.label(NavAction::Back), "Back"),
+                ],
+                None,
+            ))
+    }
+
     /// Full-screen car/track picker: search, sort, brand filter and a grid of cards.
     fn picker_sheet(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let kind = self.picker.unwrap_or(PickerKind::Car);
         let cars = kind == PickerKind::Car;
+        if cars && self.brand_menu_focus.is_some() {
+            return self.brand_menu(cx).into_any_element();
+        }
         let dev = self.input_device;
         let (title, filter, counter, sort_label, desc) = if cars {
             (
@@ -2466,13 +2649,9 @@ impl CmApp {
             hints.push(hint(&format!("{}/{}", dev.label(NavAction::SubPrev), dev.label(NavAction::SubNext)), "Brand"));
         }
         div()
-            .absolute()
-            .top_0()
-            .left_0()
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme::bg())
             .child(
                 div()
                     .flex()
@@ -2493,8 +2672,8 @@ impl CmApp {
                     )
                     .when(cars, |d| {
                         d.child(
-                            button("pick-brand", format!("Brand: {}", self.car_brand.clone().unwrap_or_else(|| "All".into())))
-                                .on_click(cx.listener(|this, _, _, cx| this.cycle_picker_brand(1, cx))),
+                            button("pick-brand", format!("Brand: {} ▾", self.car_brand.as_deref().unwrap_or("All")))
+                                .on_click(cx.listener(|this, _, window, cx| this.open_brand_menu(window, cx))),
                         )
                     })
                     .child(button("pick-close", "Close").on_click(cx.listener(|this, _, _, cx| {
@@ -3130,6 +3309,15 @@ impl Render for CmApp {
             .child(self.tab_bar(cx))
             .child(div().flex_1().min_h_0().min_w_0().child(page))
             .child(self.footer_bar(status, status_err, cx))
-            .children(self.picker.map(|_| self.picker_sheet(cx)))
+            .children(self.picker.map(|_| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .occlude()
+                    .bg(theme::bg())
+                    .child(self.picker_sheet(cx))
+            }))
     }
 }
