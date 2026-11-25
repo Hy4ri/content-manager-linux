@@ -666,6 +666,16 @@ pub fn installed(ac_root: &Path) -> bool {
     config_dir(ac_root).join("data_manifest.ini").is_file()
 }
 
+/// CSP's build number (`[VERSION] SHADERS_PATCH_BUILD`), which servers compare against.
+pub fn installed_build(ac_root: &Path) -> Option<u32> {
+    IniFile::load_or_default(&config_dir(ac_root).join("data_manifest.ini"))
+        .ok()?
+        .get("VERSION", "SHADERS_PATCH_BUILD")?
+        .trim()
+        .parse()
+        .ok()
+}
+
 impl CspConfig {
     pub fn load(ac_root: &Path) -> Result<Self> {
         let user = user_dir(ac_root)

@@ -10,6 +10,7 @@ mod csp_view;
 mod events_view;
 mod mods_view;
 mod nav;
+mod online_view;
 mod text_input;
 mod theme;
 mod widgets;

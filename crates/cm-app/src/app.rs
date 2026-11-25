@@ -23,6 +23,7 @@ use crate::browser_view::PreviewDownload;
 use crate::content_sort::{CarSort, TrackSort};
 use crate::events_view::{EventsView, Running};
 use crate::csp_view::CspView;
+use crate::online_view::{Installed, LaunchConfig, OnlineView, Source as OnlineSource};
 use crate::mods_view::{ModsChanged, ModsNavigate, ModsTarget, ModsView};
 use crate::nav::NavAction;
 use crate::text_input::TextInput;
@@ -45,16 +46,20 @@ enum Page {
     Game,
     Csp,
     Settings,
+    Online,
+    OnlineFavourites,
+    OnlineRecent,
 }
 
 /// Top-level tabs in bar order; L1/R1 walk these. Each tab owns one or more pages, and
 /// L2/R2 walk the pages inside the active tab (shown as a sub-tab strip when there are several).
-const TABS: [(&str, &[Page]); 7] = [
+const TABS: [(&str, &[Page]); 8] = [
     ("Drive", &[Page::QuickDrive]),
     ("Garage", &[Page::Cars]),
     ("Tracks", &[Page::Tracks]),
     ("Career", &[Page::Career]),
     ("Events", &[Page::SpecialEvents]),
+    ("Online", &[Page::Online, Page::OnlineFavourites, Page::OnlineRecent]),
     ("Mods", &[Page::Browser, Page::Install, Page::InstalledMods]),
     ("Settings", &[Page::Game, Page::Csp, Page::Settings]),
 ];
@@ -67,11 +72,24 @@ fn page_label(page: Page) -> &'static str {
         Page::Game => "Game",
         Page::Csp => "CSP",
         Page::Settings => "App",
+        Page::Online => "Servers",
+        Page::OnlineFavourites => "Favourites",
+        Page::OnlineRecent => "Recent",
         Page::QuickDrive => "Drive",
         Page::Cars => "Garage",
         Page::Tracks => "Tracks",
         Page::Career => "Career",
         Page::SpecialEvents => "Events",
+    }
+}
+
+/// The Online view's list for an Online sub-page.
+fn online_source(page: Page) -> Option<OnlineSource> {
+    match page {
+        Page::Online => Some(OnlineSource::Lobby),
+        Page::OnlineFavourites => Some(OnlineSource::Favourites),
+        Page::OnlineRecent => Some(OnlineSource::Recent),
+        _ => None,
     }
 }
 
@@ -172,7 +190,7 @@ fn car_spec<'a>(car: &'a Car, key: &str) -> Option<&'a str> {
         .filter(|v| !v.is_empty() && !matches!(*v, "--" | "?" | "-"))
 }
 
-fn format_track_length(raw: &str) -> String {
+pub(crate) fn format_track_length(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return String::new();
@@ -281,6 +299,7 @@ pub struct CmApp {
     events: Option<Entity<EventsView>>,
     mods_view: Option<Entity<ModsView>>,
     csp_view: Option<Entity<CspView>>,
+    online: Option<Entity<OnlineView>>,
 
     car: Option<usize>,
     skin: usize,
@@ -515,6 +534,7 @@ impl CmApp {
             events: None,
             mods_view: None,
             csp_view: None,
+            online: None,
             settings,
             ac_root,
             content: Arc::default(),
@@ -618,6 +638,10 @@ impl CmApp {
                 .await;
             this.update(cx, |this, cx| {
                 this.content = Arc::new(content);
+                if let Some(online) = &this.online {
+                    let installed = Installed::new(&this.content.cars, &this.content.tracks);
+                    online.update(cx, |v, cx| v.set_installed(installed, cx));
+                }
                 this.loading = false;
                 this.restore_selection();
                 this.refilter(cx);
@@ -798,6 +822,7 @@ impl CmApp {
             Ok(mut child) => {
                 self.game_running = true;
                 if let Some(events) = &self.events { events.update(cx, |view, cx| view.set_running(true, cx)); }
+                if let Some(online) = &self.online { online.update(cx, |view, cx| view.set_running(true, cx)); }
                 self.set_status("Assetto Corsa is starting…", false, cx);
                 cx.spawn(async move |this, cx| {
                     let code = cx
@@ -807,6 +832,7 @@ impl CmApp {
                     this.update(cx, |this, cx| {
                         this.game_running = false;
                         if let Some(events) = &this.events { events.update(cx, |view, cx| view.set_running(false, cx)); }
+                        if let Some(online) = &this.online { online.update(cx, |view, cx| view.set_running(false, cx)); }
                         match code {
                             Ok(c) if c.success() => this.set_status("Game closed.", false, cx),
                             Ok(c) => this.set_status(
@@ -851,6 +877,7 @@ impl CmApp {
             self.game_cfg = None;
             self.mods_view = None;
             self.csp_view = None;
+            self.online = None;
         }
         self.set_status("Settings saved.", false, cx);
         if changed {
@@ -1796,6 +1823,7 @@ impl CmApp {
             let view = cx.new(|cx| EventsView::new(root, career, driver, nationality, proton, proton_input, cx));
             cx.subscribe(&view, |this, _, event: &Running, cx| {
                 this.game_running = event.0;
+                if let Some(online) = &this.online { online.update(cx, |v, cx| v.set_running(event.0, cx)); }
                 cx.notify();
             }).detach();
             view.update(cx, |view, cx| view.set_running(self.game_running, cx));
@@ -1849,6 +1877,48 @@ impl CmApp {
         }
     }
 
+    fn online_config(&self) -> LaunchConfig {
+        LaunchConfig {
+            driver: self.settings.driver_name.clone(),
+            nationality: self.settings.nationality.clone(),
+            proton: self.settings.proton.clone(),
+            input: self.settings.proton_input.clone(),
+            base: self.settings.last_quick_drive.clone().unwrap_or_default(),
+        }
+    }
+
+    fn ensure_online(&mut self, source: OnlineSource, cx: &mut Context<Self>) {
+        let Some(root) = self.ac_root.clone() else { return };
+        if self.online.as_ref().is_some_and(|v| v.read(cx).root != root) && !self.game_running {
+            self.online = None;
+        }
+        let config = self.online_config();
+        let device = self.input_device;
+        match &self.online {
+            Some(view) => view.update(cx, |v, cx| {
+                v.configure(config, cx);
+                v.set_input_device(device, cx);
+                v.set_source(source, cx);
+            }),
+            None => {
+                let installed = Installed::new(&self.content.cars, &self.content.tracks);
+                let running = self.game_running;
+                let view = cx.new(|cx| OnlineView::new(root, source, installed, config, cx));
+                cx.subscribe(&view, |this, _, event: &Running, cx| {
+                    this.game_running = event.0;
+                    if let Some(events) = &this.events { events.update(cx, |v, cx| v.set_running(event.0, cx)); }
+                    cx.notify();
+                })
+                .detach();
+                view.update(cx, |v, cx| {
+                    v.set_input_device(device, cx);
+                    v.set_running(running, cx);
+                });
+                self.online = Some(view);
+            }
+        }
+    }
+
     fn goto_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(page, Page::Career | Page::SpecialEvents) {
             self.ensure_events(page == Page::Career, cx);
@@ -1861,6 +1931,9 @@ impl CmApp {
         }
         if page == Page::Csp {
             self.ensure_csp(cx);
+        }
+        if let Some(source) = online_source(page) {
+            self.ensure_online(source, cx);
         }
         if let Some(browser) = &self.browser {
             browser.update(cx, |browser, cx| browser.set_active(page == Page::Browser, cx));
@@ -1937,6 +2010,18 @@ impl CmApp {
                 csp.update(cx, |view, cx| {
                     view.set_input_device(device, cx);
                     view.pad(name, cx)
+                })
+            });
+            if handled || name != "B" {
+                return;
+            }
+        }
+        if online_source(self.page).is_some() && !matches!(name, "LSHOULDER" | "RSHOULDER" | "LTRIGGER" | "RTRIGGER") {
+            let device = self.input_device;
+            let handled = self.online.as_ref().is_some_and(|online| {
+                online.update(cx, |view, cx| {
+                    view.set_input_device(device, cx);
+                    view.pad(name, window, cx)
                 })
             });
             if handled || name != "B" {
@@ -2120,6 +2205,14 @@ impl CmApp {
                 hints.push(h(NavAction::Primary, "Save"));
                 hints.push(h(NavAction::Back, "Back"));
             }
+            Page::Online | Page::OnlineFavourites | Page::OnlineRecent => match &self.online {
+                Some(online) => {
+                    for (action, text) in online.read(cx).hints() {
+                        hints.push(h(action, text));
+                    }
+                }
+                None => hints.push(h(NavAction::Back, "Back")),
+            },
             Page::Install | Page::Game | Page::Settings => {
                 if TABS[tab_of(self.page)].1.len() > 1 {
                     hints.push(h(NavAction::SubPrev, "Prev page"));
@@ -2138,12 +2231,23 @@ impl CmApp {
                 .when(self.game_running, |d| d.opacity(0.6))
                 .when(!self.game_running, |d| d.on_click(cx.listener(Self::go)))
         });
+        // Join is pinned here like Go!; pressing it while blocked explains why on the page.
+        let join = self.online.as_ref().filter(|_| online_source(self.page).is_some()).and_then(|online| {
+            let (label, enabled) = online.read(cx).primary(cx)?;
+            let online = online.clone();
+            Some(
+                primary_button("online-join", label)
+                    .when(!enabled, |d| d.opacity(0.6))
+                    .on_click(move |_, _, cx| online.update(cx, |v, cx| v.join(cx))),
+            )
+        });
         let primary = div()
             .flex()
             .items_center()
             .gap_4()
             .child(status_el)
             .children(go)
+            .children(join)
             .into_any_element();
         hint_bar(hints, Some(primary))
     }
@@ -2588,10 +2692,25 @@ impl CmApp {
         if self.capturing.is_some() || self.pad_capturing.is_some() {
             return;
         }
-        if self.picker.is_none() && !matches!(self.page, Page::QuickDrive | Page::Cars | Page::Tracks | Page::Csp) {
+        if self.picker.is_none()
+            && !matches!(self.page, Page::QuickDrive | Page::Cars | Page::Tracks | Page::Csp)
+            && online_source(self.page).is_none()
+        {
             return;
         }
         let key = e.keystroke.key.as_str();
+        // Typing into an Online field (search, address, password) is not navigation.
+        if online_source(self.page).is_some()
+            && let Some(online) = self.online.clone()
+            && online.read(cx).input_focused(window, cx)
+        {
+            if online.update(cx, |v, cx| v.input_key(key, window, cx)) {
+                window.focus(&self.root_focus);
+                cx.stop_propagation();
+                cx.notify();
+            }
+            return;
+        }
         // Typing into a CSP text field is not navigation; Esc hands focus back.
         if self.page == Page::Csp && self.csp_view.as_ref().is_some_and(|v| v.read(cx).input_focused(window, cx)) {
             if key == "escape" {
@@ -4372,6 +4491,15 @@ impl Render for CmApp {
                 Page::Settings => self
                     .settings_page(text_w(main_w, SETTINGS_MAX_W), cx)
                     .into_any_element(),
+                Page::Online | Page::OnlineFavourites | Page::OnlineRecent => match &self.online {
+                    Some(view) => div().size_full().child(view.clone()).into_any_element(),
+                    None => div()
+                        .p_4()
+                        .text_sm()
+                        .text_color(theme::muted())
+                        .child("Set your Assetto Corsa folder in Settings to play online.")
+                        .into_any_element(),
+                },
             }
         };
         let status: SharedString = self
@@ -4399,6 +4527,9 @@ impl Render for CmApp {
                     }
                     if let Some(csp_view) = &this.csp_view {
                         csp_view.update(cx, |v, cx| v.set_input_device(crate::nav::InputDevice::Mouse, cx));
+                    }
+                    if let Some(online) = &this.online {
+                        online.update(cx, |v, cx| v.set_input_device(crate::nav::InputDevice::Mouse, cx));
                     }
                     cx.notify();
                 }

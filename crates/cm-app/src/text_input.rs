@@ -47,7 +47,12 @@ pub struct TextInput {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    /// Draw every character as a dot and refuse copy/cut (passwords).
+    masked: bool,
 }
+
+/// What a masked field shows for each character.
+const MASK: char = '•';
 
 impl TextInput {
     pub fn new(cx: &mut Context<Self>, placeholder: impl Into<SharedString>, text: impl Into<SharedString>) -> Self {
@@ -63,7 +68,27 @@ impl TextInput {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            masked: false,
         }
+    }
+
+    pub fn masked(mut self) -> Self {
+        self.masked = true;
+        self
+    }
+
+    /// Byte offset in the drawn text for a byte offset in `content`.
+    fn display_offset(&self, offset: usize) -> usize {
+        if self.masked { self.content[..offset].chars().count() * MASK.len_utf8() } else { offset }
+    }
+
+    /// Byte offset in `content` for a byte offset in the drawn text.
+    fn content_offset(&self, offset: usize) -> usize {
+        if !self.masked {
+            return offset;
+        }
+        let n = offset.div_ceil(MASK.len_utf8());
+        self.content.char_indices().nth(n).map(|(i, _)| i).unwrap_or(self.content.len())
     }
 
     pub fn is_focused(&self, window: &Window) -> bool {
@@ -163,13 +188,13 @@ impl TextInput {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.masked {
             cx.write_to_clipboard(ClipboardItem::new_string(self.content[self.selected_range.clone()].to_string()));
         }
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.masked {
             cx.write_to_clipboard(ClipboardItem::new_string(self.content[self.selected_range.clone()].to_string()));
             self.replace_text_in_range(None, "", window, cx)
         }
@@ -197,7 +222,7 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
+        self.content_offset(line.closest_index_for_x(position.x - bounds.left()))
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -344,8 +369,8 @@ impl EntityInputHandler for TextInput {
         let last_layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
         Some(Bounds::from_corners(
-            point(bounds.left() + last_layout.x_for_index(range.start), bounds.top()),
-            point(bounds.left() + last_layout.x_for_index(range.end), bounds.bottom()),
+            point(bounds.left() + last_layout.x_for_index(self.display_offset(range.start)), bounds.top()),
+            point(bounds.left() + last_layout.x_for_index(self.display_offset(range.end)), bounds.bottom()),
         ))
     }
 
@@ -357,7 +382,7 @@ impl EntityInputHandler for TextInput {
     ) -> Option<usize> {
         let line_point = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
-        let utf8_index = last_layout.index_for_x(point.x - line_point.x)?;
+        let utf8_index = self.content_offset(last_layout.index_for_x(point.x - line_point.x)?);
         Some(self.offset_to_utf16(utf8_index))
     }
 }
@@ -416,15 +441,18 @@ impl Element for TextElement {
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
         let content = input.content.clone();
-        let selected_range = input.selected_range.clone();
-        let cursor = input.cursor_offset();
+        let selected_range = input.display_offset(input.selected_range.start)..input.display_offset(input.selected_range.end);
+        let cursor = input.display_offset(input.cursor_offset());
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
             (input.placeholder.clone(), theme::muted().into())
+        } else if input.masked {
+            (content.chars().map(|_| MASK).collect::<String>().into(), style.color)
         } else {
             (content, style.color)
         };
+        let marked_range = input.marked_range.as_ref().map(|r| input.display_offset(r.start)..input.display_offset(r.end));
 
         let run = TextRun {
             len: display_text.len(),
@@ -434,7 +462,7 @@ impl Element for TextElement {
             underline: None,
             strikethrough: None,
         };
-        let runs = if let Some(marked_range) = input.marked_range.as_ref() {
+        let runs = if let Some(marked_range) = marked_range.as_ref() {
             vec![
                 TextRun { len: marked_range.start, ..run.clone() },
                 TextRun {
