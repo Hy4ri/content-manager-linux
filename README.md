@@ -116,3 +116,9 @@ cm-rs acd unpack <car>/data.acd                        # unpack car data.acd
 cm-rs acd pack <car>/data                              # pack data/ back to data.acd
 cm-rs install mod-package.zip                          # install .zip, .7z, or .rar mod
 ```
+
+---
+
+## License
+
+Licensed under the [MIT License](LICENSE).
