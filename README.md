@@ -2,7 +2,7 @@
 
 A native rewrite of [Content Manager](https://github.com/gro-ove/actools) for Assetto Corsa in Rust using [GPUI](https://gpui.rs) (Zed's GPU-accelerated UI framework).
 
-It runs natively on Linux (and Windows), launching `acs.exe` through Proton with proper Steam runtime container integration and controller support.
+Built to run natively on Linux (and Windows), launching `acs.exe` through Proton with proper Steam runtime integration, Custom Shaders Patch (CSP) support, and controller-first navigation.
 
 ![Quick Drive](docs/screenshots/quick-drive.png)
 
@@ -27,58 +27,82 @@ It runs natively on Linux (and Windows), launching `acs.exe` through Proton with
 ## Features
 
 - **Quick Drive**: Pick car, skin, track, and layout. Practice, Hotlap, or Quick Race against AI (configurable laps, opponent count, AI strength, and starting grid slot). Controls for time of day, ambient temperature (using Content Manager's road temperature model), weather presets, and track penalties. Prepares `race.ini` and launches `acs.exe`.
-- **Cars**: Filter and search across car models and brands. Detailed specs, badges, descriptions, and skin/livery picker. Unpack encrypted `data.acd` to `data/` and pack edited `data/` back into `data.acd` (with automated backups).
-- **Tracks**: Full track and layout browser with map previews, track outlines, length, and pit box capacity.
-- **Career & Special Events**: Full career mode series progression, series unlock criteria, AI opponent setups, championship points, medal targets (Gold/Silver/Bronze), and personal record tracking.
-- **Embedded Mod Browser (Get mods)**: Integrated CEF/Chromium browser with persistent browsing sessions, bookmarks, and direct mod download capture.
-- **Mod Installer**: Drag-and-drop or file pick `.zip` archives. Automatically detects car and track structures and extracts them cleanly into your Assetto Corsa directory.
-- **In-Game Settings**: Video, audio, UI, and input configuration with gamepad bind capture and direct AC INI editing.
-- **Gamepad Navigation**: Drive launcher navigation with controller buttons and d-pad.
-- **CLI Tools**: Scriptable terminal utilities for headless tasks (`cm-rs list cars|tracks|events`, `cm-rs acd unpack|pack`, `cm-rs install`, `cm-rs where`).
+- **Cars & Garage**: Brand logo picker, search, sort with direction filter, and list/grid views. Detailed specs, badges, descriptions, and skin/livery picker. Unpack encrypted `data.acd` to `data/` and pack edited `data/` back into `data.acd` (with automatic backups).
+- **Tracks**: Full track and layout browser with map previews, track outlines, sort and list/grid views, length, and pit box capacity.
+- **Career & Special Events**: 3-step Career progression with AC unlock rules, championship points, AI opponent setups, Special Event medal targets (Gold/Silver/Bronze), and personal record tracking.
+- **Mods (Browser, Installer & Manager)**:
+  - **Get mods**: Embedded CEF/Chromium browser with persistent sessions, bookmarks, and download progress shared across tabs.
+  - **Mod Installer**: Drag-and-drop or file-pick `.zip`, `.7z`, and `.rar` archives. Automatically detects car and track structures and extracts them cleanly into your Assetto Corsa directory.
+  - **Installed Mods**: Browse and manage installed mods directly under the Mods tab.
+- **Game Settings & Custom Shaders Patch (CSP)**: Video, audio, UI, and input settings with X360 gamepad bind capture, direct AC INI editing, and a dedicated **CSP Settings** page (`Settings > CSP`).
+- **Gamepad Navigation**: Controller-first navigation across tabs, pickers, and menus using D-pad, sticks, and face/shoulder buttons.
+- **CLI Tools**: Scriptable utilities for headless tasks (`cm-rs list cars|tracks|events`, `cm-rs acd unpack|pack`, `cm-rs install`, `cm-rs where`).
+
+### Current Scope
+
+`cm-rs` focuses on single-player and local content management first. Online server browsing (Kunos lobbies, LFM, etc.) is not implemented yet.
 
 ---
 
-## Getting Started (Linux)
+## Download & Install (Linux)
 
-### 1. Steam & Proton Setup
-1. In Steam, enable Proton for Assetto Corsa (Proton-GE 9-20 or newer is recommended).
+### Prerequisites (Steam & Proton)
+1. In Steam, enable Proton for Assetto Corsa (Proton-GE 9-20+ or CachyOS Proton is recommended).
 2. Launch the game once from Steam so it generates the Proton prefix directory (`steamapps/compatdata/244210`).
 
-### 2. Nix / NixOS (Recommended)
+### 1. AppImage (Recommended for most distros & Steam Deck)
 
-Run directly via the development shell:
+Download the latest `cm-rs-v*-x86_64.AppImage` from [GitHub Releases](https://github.com/Hy4ri/content-manager-linux/releases/latest):
+
+```sh
+chmod +x cm-rs-v*-x86_64.AppImage
+./cm-rs-v*-x86_64.AppImage
+```
+
+### 2. Portable Tarball
+
+Download `cm-rs-v*-linux-x86_64.tar.gz` from [GitHub Releases](https://github.com/Hy4ri/content-manager-linux/releases/latest), extract it, and run `./cm-rs` from the extracted directory.
+
+### 3. Nix / NixOS
+
+Run the prebuilt release package directly:
+```sh
+nix run github:Hy4ri/content-manager-linux
+```
+
+Or install it into your profile:
+```sh
+nix profile install github:Hy4ri/content-manager-linux
+```
+
+### 4. Build from Source
+
+**Nix dev shell**:
 ```sh
 nix develop path:. -c cargo run --release -p cm-app
 ```
 
-Or build the standalone package and desktop launcher:
-```sh
-nix build path:.
-./result/bin/cm-rs
-```
+**Arch / Debian / Ubuntu / Fedora**:
 
-### 3. Native Build (Arch / Debian / Ubuntu / Fedora)
-
-Install the required build dependencies:
-
+Install the build dependencies:
 - **Debian / Ubuntu**:
   ```sh
   sudo apt install build-essential pkg-config cmake ninja-build \
       libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev \
-      libfontconfig-dev libvulkan1 mesa-vulkan-drivers
+      libfontconfig-dev libfreetype-dev libvulkan-dev libssl-dev libzstd-dev
   ```
 - **Arch**:
   ```sh
-  sudo pacman -S base-devel cmake ninja pkgconf libxkbcommon-x11 wayland libxcb fontconfig vulkan-icd-loader
+  sudo pacman -S base-devel cmake ninja pkgconf libxkbcommon-x11 wayland libxcb fontconfig vulkan-icd-loader openssl zstd
   ```
 - **Fedora**:
   ```sh
   sudo dnf install gcc gcc-c++ cmake ninja-build pkgconf \
       libxkbcommon-x11-devel wayland-devel libxcb-devel \
-      fontconfig-devel vulkan-loader
+      fontconfig-devel freetype-devel vulkan-loader-devel openssl-devel libzstd-devel
   ```
 
-Build with Rust (1.80+):
+Build with Rust (1.85+):
 ```sh
 cargo build --release -p cm-app
 ./target/release/cm-rs
@@ -131,7 +155,7 @@ cm-rs acd unpack content/cars/ks_ferrari_812_superfast/data.acd
 # Encrypt data/ folder back into data.acd
 cm-rs acd pack content/cars/ks_ferrari_812_superfast/data
 
-# Install car/track mod archives
+# Install car/track mod archives (.zip, .7z, .rar)
 cm-rs install mod-package.zip
 ```
 
@@ -147,7 +171,7 @@ cm-rs install mod-package.zip
   - `race.rs`: `race.ini` generator and session setup.
   - `launch.rs`: Proton runner, runtime environment isolation, and process execution.
   - `paths.rs`: Steam library, AC root, and compatdata directory discovery.
-  - `install.rs`: Mod archive inspection and layout extraction.
+  - `install.rs`: Mod archive inspection and layout extraction (`.zip`, `.7z`, `.rar`).
   - `game_cfg.rs` & `gamepad.rs`: Assetto Corsa configuration files and controller capture.
 - `crates/cm-app`: GPUI desktop application and CLI entrypoint.
 
