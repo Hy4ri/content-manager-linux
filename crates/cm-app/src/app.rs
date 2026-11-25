@@ -271,7 +271,10 @@ struct InstallState {
     items: Vec<install::Item>,
 }
 
+const APP_ICON_PNG: &[u8] = include_bytes!("../../../packaging/icons/cm-rs-64.png");
+
 pub struct CmApp {
+    app_icon: Arc<gpui::Image>,
     settings: Settings,
     ac_root: Option<PathBuf>,
     content: Arc<Content>,
@@ -506,6 +509,10 @@ impl CmApp {
             settings.track_picker_view
         };
         let mut this = Self {
+            app_icon: Arc::new(gpui::Image::from_bytes(
+                gpui::ImageFormat::Png,
+                APP_ICON_PNG.to_vec(),
+            )),
             page: if ac_root.is_some() {
                 Page::QuickDrive
             } else {
@@ -2059,7 +2066,21 @@ impl CmApp {
                 .gap_3()
                 .px_4()
                 .h(px(56.))
-                .child(div().mr_4().text_lg().font_weight(FontWeight::BOLD).text_color(theme::accent()).child("Content Manager"))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .mr_4()
+                        .child(img(self.app_icon.clone()).size(px(28.)).flex_shrink_0())
+                        .child(
+                            div()
+                                .text_lg()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme::accent())
+                                .child("Content Manager"),
+                        ),
+                )
                 .child(glyph(NavAction::TabPrev))
                 .child(tabs)
                 .child(glyph(NavAction::TabNext)),
