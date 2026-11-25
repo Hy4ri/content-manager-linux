@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/ac-core", "crates/cm-app"]
 
 [workspace.package]
-version = "3.0.0"
+version = "3.0.1"
 edition = "2024"
 license = "MS-PL"
 
