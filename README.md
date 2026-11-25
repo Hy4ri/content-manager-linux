@@ -22,6 +22,10 @@ Built to run natively on Linux (and Windows), launching `acs.exe` through Proton
 | :---: | :---: |
 | ![Career](docs/screenshots/career.png) | ![Special Events](docs/screenshots/special-events.png) |
 
+| Custom Shaders Patch (CSP) Settings | Installed Mods Manager |
+| :---: | :---: |
+| ![CSP Settings](docs/screenshots/csp-settings.png) | ![Installed Mods](docs/screenshots/installed-mods.png) |
+
 ---
 
 ## Features
