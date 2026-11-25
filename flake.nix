@@ -138,7 +138,7 @@
 
             meta = {
               description = "Content Manager for Assetto Corsa, rewritten in Rust with GPUI";
-              license = lib.licenses.mspl;
+              license = lib.licenses.mit;
               mainProgram = "cm-rs";
               platforms = systems;
             };
@@ -188,7 +188,7 @@
 
             meta = {
               description = "Content Manager for Assetto Corsa, rewritten in Rust with GPUI";
-              license = lib.licenses.mspl;
+              license = lib.licenses.mit;
               mainProgram = "cm-rs";
               platforms = [ "x86_64-linux" ];
               sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];
