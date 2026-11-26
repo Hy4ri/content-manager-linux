@@ -16,7 +16,7 @@ use gpui::{
     Bounds, BoxShadow, ClickEvent, Context, Div, Entity, FocusHandle, FontWeight, KeyDownEvent,
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit,
     PathPromptOptions, Pixels, ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle,
-    Window, canvas, deferred, div, img, point, prelude::*, px, relative, rgba, uniform_list,
+    Window, canvas, deferred, div, img, point, prelude::*, px, relative, uniform_list,
 };
 
 use crate::browser_downloads::{download_base_dir, manage_archives};
@@ -75,7 +75,7 @@ fn page_label(page: Page) -> &'static str {
         Page::Csp => "CSP",
         Page::Settings => "App",
         Page::Online => "Servers",
-        Page::OnlineFavourites => "★ Favourites",
+        Page::OnlineFavourites => "Favourites",
         Page::OnlineRecent => "Recent",
         Page::QuickDrive => "Drive",
         Page::Cars => "Garage",
@@ -814,7 +814,7 @@ impl CmApp {
                         .hover(|s| s.bg(theme::accent_hover()))
                         .rounded_r(px(theme::RADIUS_SM))
                         .border_l_1()
-                        .border_color(rgba(0x11111133))
+                        .border_color(theme::on_accent_divider())
                         .child("✕")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.new_release = None;
@@ -2529,12 +2529,21 @@ impl CmApp {
         let h = |a: NavAction, text: &str| hint(dev.label(a), text);
         let mut hints = vec![h(NavAction::TabPrev, "Prev tab"), h(NavAction::TabNext, "Next tab")];
         match self.page {
-            Page::Browser => hints.push(h(NavAction::Back, "Back to Drive")),
+            Page::Browser => {
+                hints.push(h(NavAction::SubPrev, "Prev page"));
+                hints.push(h(NavAction::SubNext, "Next page"));
+                hints.push(h(NavAction::Back, "Back to Drive"));
+                hints.push(
+                    div()
+                        .text_xs()
+                        .text_color(theme::muted())
+                        .child("Web pages use mouse & keyboard"),
+                );
+            }
             Page::QuickDrive if self.weather_menu.is_some() => {
                 hints.push(hint(&format!("{} ↕", dev.label(NavAction::Up)), "Move"));
                 hints.push(h(NavAction::Confirm, "Select weather"));
                 hints.push(h(NavAction::Back, "Close"));
-                hints.push(h(NavAction::Primary, "Go!"));
             }
             Page::QuickDrive => {
                 let rows = self.drive_rows();
@@ -2554,7 +2563,6 @@ impl CmApp {
                     _ => {}
                 }
                 hints.push(h(NavAction::Secondary, "Next skin"));
-                hints.push(h(NavAction::Primary, "Go!"));
             }
             Page::Cars | Page::Tracks => {
                 hints.push(hint(
@@ -2570,7 +2578,6 @@ impl CmApp {
                 hints.push(h(NavAction::Confirm, "Change"));
                 hints.push(h(NavAction::Search, "Folder"));
                 hints.push(h(NavAction::Back, "Drive"));
-                hints.push(h(NavAction::Primary, "Go!"));
             }
             Page::Career => {
                 hints.push(h(NavAction::Up, "Move"));
@@ -3180,23 +3187,36 @@ impl CmApp {
         if self.capturing.is_some() || self.pad_capturing.is_some() {
             return;
         }
-        if self.picker.is_none()
-            && !matches!(
-                self.page,
-                Page::QuickDrive
-                    | Page::Cars
-                    | Page::Tracks
-                    | Page::Career
-                    | Page::SpecialEvents
-                    | Page::InstalledMods
-                    | Page::Csp
-                    | Page::Game
-            )
-            && online_source(self.page).is_none()
+        let key = e.keystroke.key.as_str();
+        // Typing into a Settings field or the embedded browser is not navigation; Esc hands focus back.
+        if self.page == Page::Settings
+            && [
+                &self.in_root,
+                &self.in_driver,
+                &self.in_nation,
+                &self.in_proton,
+                &self.in_download_dir,
+            ]
+            .iter()
+            .any(|input| input.read(cx).is_focused(window))
         {
+            if key == "escape" {
+                window.focus(&self.root_focus);
+                cx.stop_propagation();
+                cx.notify();
+            }
             return;
         }
-        let key = e.keystroke.key.as_str();
+        if self.page == Page::Browser
+            && self.browser.as_ref().is_some_and(|b| b.read(cx).input_focused(window, cx))
+        {
+            if key == "escape" {
+                window.focus(&self.root_focus);
+                cx.stop_propagation();
+                cx.notify();
+            }
+            return;
+        }
         // Typing into an Online field (search, address, password) is not navigation.
         if online_source(self.page).is_some()
             && let Some(online) = self.online.clone()
@@ -3487,7 +3507,7 @@ impl CmApp {
             .border_1()
             .border_color(theme::border())
             .shadow(vec![BoxShadow {
-                color: rgba(0x00000099).into(),
+                color: theme::shadow().into(),
                 offset: point(px(0.), px(6.)),
                 blur_radius: px(16.),
                 spread_radius: px(0.),
@@ -3783,7 +3803,7 @@ impl CmApp {
                             .bottom(px(6.))
                             .p_1()
                             .rounded(px(theme::RADIUS_SM))
-                            .bg(rgba(0x0f1012cc))
+                            .bg(theme::scrim())
                             .child(track_map(line, outline, map_side)),
                     )
                 })
@@ -3796,7 +3816,7 @@ impl CmApp {
                             .px_2()
                             .py_0p5()
                             .rounded(px(theme::RADIUS_SM))
-                            .bg(rgba(0x0f1012cc))
+                            .bg(theme::scrim())
                             .text_xs()
                             .font_weight(FontWeight::BOLD)
                             .child(format!("{layouts} layouts")),
@@ -4298,7 +4318,7 @@ impl CmApp {
             .border_1()
             .border_color(theme::border())
             .shadow(vec![BoxShadow {
-                color: rgba(0x00000099).into(),
+                color: theme::shadow().into(),
                 offset: point(px(0.), px(6.)),
                 blur_radius: px(16.),
                 spread_radius: px(0.),
@@ -4405,7 +4425,7 @@ impl CmApp {
             .border_1()
             .border_color(theme::border())
             .shadow(vec![BoxShadow {
-                color: rgba(0x00000099).into(),
+                color: theme::shadow().into(),
                 offset: point(px(0.), px(6.)),
                 blur_radius: px(16.),
                 spread_radius: px(0.),
@@ -4727,6 +4747,15 @@ impl CmApp {
         label: String,
         selected: bool,
     ) -> gpui::Stateful<Div> {
+        // GPUI 0.2.2 clips fixed-width flex labels without drawing an ellipsis.
+        let label = if label.chars().count() > 17 {
+            let mut s: String = label.chars().take(16).collect();
+            s.truncate(s.trim_end().len());
+            s.push('…');
+            s
+        } else {
+            label
+        };
         div()
             .id(id)
             .w(px(STRIP_THUMB_W))
@@ -4747,9 +4776,16 @@ impl CmApp {
                     .h(px(STRIP_LABEL_H))
                     .flex()
                     .items_center()
-                    .text_xs()
-                    .when(!selected, |d| d.text_color(theme::muted()))
-                    .child(div().w(px(STRIP_THUMB_W - 14.)).truncate().child(label)),
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .w(px(STRIP_THUMB_W - 16.))
+                            .min_w_0()
+                            .text_xs()
+                            .when(!selected, |d| d.text_color(theme::muted()))
+                            .truncate()
+                            .child(label),
+                    ),
             )
     }
 
@@ -4768,7 +4804,7 @@ impl CmApp {
                 d.child(button("unpack", "Unpack data.acd").on_click(cx.listener(Self::unpack_acd)))
             })
             .when(car.has_data_dir, |d| d.child(button("pack", "Pack data.acd").on_click(cx.listener(Self::pack_acd))))
-            .child(primary_button_pad("drive-car", "Drive", self.pad_label(NavAction::Back)).on_click(cx.listener(Self::open_quick_drive)));
+            .child(button_pad("drive-car", "Drive", self.pad_label(NavAction::Back)).on_click(cx.listener(Self::open_quick_drive)));
         let sub = [car.brand.clone(), car.class.clone(), car.year.clone()]
             .into_iter()
             .flatten()
@@ -4864,7 +4900,7 @@ impl CmApp {
             .when_some(dir, |d, dir| {
                 d.child(button_pad("track-folder", "Open folder", self.pad_label(NavAction::Search)).on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&dir))))
             })
-            .child(primary_button_pad("drive-track", "Drive", self.pad_label(NavAction::Back)).on_click(cx.listener(Self::open_quick_drive)));
+            .child(button_pad("drive-track", "Drive", self.pad_label(NavAction::Back)).on_click(cx.listener(Self::open_quick_drive)));
         let place = [l.city.clone(), l.country.clone()]
             .into_iter()
             .flatten()
@@ -5346,12 +5382,16 @@ impl Render for CmApp {
                 },
             }
         };
-        let status: SharedString = self
-            .status
-            .as_ref()
-            .map(|(s, _)| s.clone())
-            .unwrap_or_default()
-            .into();
+        let show_status = self.status.as_ref().is_some_and(|(s, err)| {
+            *err
+                || !s.starts_with("Loaded ")
+                || matches!(self.page, Page::QuickDrive | Page::Cars | Page::Tracks)
+        });
+        let status: SharedString = if show_status {
+            self.status.as_ref().map(|(s, _)| s.clone()).unwrap_or_default().into()
+        } else {
+            SharedString::default()
+        };
         let status_err = self.status.as_ref().is_some_and(|(_, e)| *e);
 
         div()

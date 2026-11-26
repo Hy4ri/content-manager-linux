@@ -94,6 +94,12 @@ impl BrowserTabs {
         }
     }
 
+    pub fn input_focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.tabs
+            .get(self.selected)
+            .is_some_and(|tab| tab.page.read(cx).input_focused(window, cx))
+    }
+
     pub fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
         self.active = active;
         self.update_visibility(cx);

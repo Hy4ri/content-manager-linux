@@ -154,6 +154,10 @@ impl BrowserView {
             .unwrap_or_default()
     }
 
+    pub fn input_focused(&self, window: &Window, cx: &App) -> bool {
+        self.address_input.read(cx).is_focused(window) || self.focus_handle.is_focused(window)
+    }
+
     pub fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
         if self.active == active {
             return;
