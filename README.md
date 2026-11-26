@@ -102,10 +102,10 @@ cargo build --release -p cm-app
 
 ## Online
 
-- **Servers** lists every server in the Kunos lobby with live ping. Filter chips (installed content, with drivers, free slots, no password) and sorting work on a controller; text search is keyboard-only (`/`).
-- Opening a server shows its track, session, conditions and cars with free slots. Missing cars or tracks are marked, and Join stays disabled with the reason shown until the server can be joined.
+- **Servers** lists every server in the Kunos lobby with live ping. "Show only" filters (installed content, with drivers, free slots, no password) and the sortable column headers (ping, server, track, drivers; press again to reverse) work on a controller; text search is keyboard-only (`/`). The last list is kept in `~/.cache/cm-rs/lobby.json`, so the tab opens at once while a fresh list downloads.
+- Opening a server shows its track, session, conditions and cars with free slots, as cards or as a **Details** table with each car's power, torque, weight, power/weight, top speed and 0–100. Missing cars or tracks are marked, and Join stays disabled with the reason shown until the server can be joined.
 - **Password servers**: type the password on the server page. It is kept in memory until `cm-rs` closes, never saved, and cleared from `race.ini` when the session ends.
-- **Favourites** (`X` on a server) and **Recent** are stored in `~/.config/cm-rs/online.toml`. **Add server** takes a `host:port` (the server's HTTP port) for servers that are not in the lobby.
+- **Favourites** (the ☆ on a row, or `X`) and **Recent** are stored in `~/.config/cm-rs/online.toml`. **Add server** takes a `host:port` (the server's HTTP port) for servers that are not in the lobby.
 - Steam must be running and signed in: servers identify drivers by their Steam account.
 - After the game closes, `cm-rs` reads the game's log and says why a join failed (wrong password, no free slot, server unreachable, or the server's own reason).
 - Not supported yet: booking servers and Content Manager's extended server list.

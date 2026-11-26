@@ -55,11 +55,11 @@ enum Page {
 /// L2/R2 walk the pages inside the active tab (shown as a sub-tab strip when there are several).
 const TABS: [(&str, &[Page]); 8] = [
     ("Drive", &[Page::QuickDrive]),
+    ("Online", &[Page::Online, Page::OnlineFavourites, Page::OnlineRecent]),
     ("Garage", &[Page::Cars]),
     ("Tracks", &[Page::Tracks]),
     ("Career", &[Page::Career]),
     ("Events", &[Page::SpecialEvents]),
-    ("Online", &[Page::Online, Page::OnlineFavourites, Page::OnlineRecent]),
     ("Mods", &[Page::Browser, Page::Install, Page::InstalledMods]),
     ("Settings", &[Page::Game, Page::Csp, Page::Settings]),
 ];
@@ -73,7 +73,7 @@ fn page_label(page: Page) -> &'static str {
         Page::Csp => "CSP",
         Page::Settings => "App",
         Page::Online => "Servers",
-        Page::OnlineFavourites => "Favourites",
+        Page::OnlineFavourites => "★ Favourites",
         Page::OnlineRecent => "Recent",
         Page::QuickDrive => "Drive",
         Page::Cars => "Garage",

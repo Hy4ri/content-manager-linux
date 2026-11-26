@@ -278,13 +278,61 @@ impl std::fmt::Display for LobbyBusy {
 
 impl std::error::Error for LobbyBusy {}
 
-/// Downloads every server registered with the Kunos lobby.
-pub fn fetch_lobby(steam_id: &str) -> Result<Vec<Server>> {
-    let body = get_text(&format!("{LOBBY_URL}?guid={steam_id}"), LOBBY_TIMEOUT, LOBBY_LIMIT)?;
-    parse_list(&body)
+/// A downloaded lobby list.
+pub struct LobbyList {
+    pub servers: Vec<Server>,
+    /// The list is fine, but it couldn't be kept for the next start.
+    pub cache_error: Option<anyhow::Error>,
 }
 
-fn parse_list(body: &str) -> Result<Vec<Server>> {
+/// Downloads every server registered with the Kunos lobby and keeps the raw answer as the
+/// cache for the next start (see `cached_lobby`).
+pub fn fetch_lobby(steam_id: &str) -> Result<LobbyList> {
+    let body = get_text(&format!("{LOBBY_URL}?guid={steam_id}"), LOBBY_TIMEOUT, LOBBY_LIMIT)?;
+    let servers = parse_list(&body, Instant::now())?;
+    let cache_error = write_lobby_cache(&body).err();
+    Ok(LobbyList { servers, cache_error })
+}
+
+/// A cached list older than this is not shown; its players and sessions say nothing anymore.
+const LOBBY_CACHE_MAX_AGE: Duration = Duration::from_secs(24 * 3600);
+
+fn lobby_cache_path() -> Option<PathBuf> {
+    Some(dirs::cache_dir()?.join("cm-rs").join("lobby.json"))
+}
+
+fn write_lobby_cache(body: &str) -> Result<()> {
+    use std::io::Write;
+    let p = lobby_cache_path().context("no cache directory")?;
+    let parent = p.parent().context("the lobby cache has no parent folder")?;
+    fs::create_dir_all(parent)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(body.as_bytes())?;
+    temp.persist(&p).with_context(|| format!("writing {}", p.display()))?;
+    Ok(())
+}
+
+/// The list from the last download and how old it is, so servers show at once while a
+/// fresh list downloads (the download is ~3 s, bound by the lobby's upload speed).
+/// `None` when there is no cache or it is older than a day.
+pub fn cached_lobby() -> Result<Option<(Vec<Server>, Duration)>> {
+    let p = lobby_cache_path().context("no cache directory")?;
+    let meta = match fs::metadata(&p) {
+        Ok(m) => m,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", p.display())),
+    };
+    let age = meta.modified()?.elapsed().unwrap_or_default();
+    if age > LOBBY_CACHE_MAX_AGE {
+        return Ok(None);
+    }
+    let body = fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
+    // Back-date the rows so session countdowns count from when the list was fetched.
+    let fetched = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
+    Ok(Some((parse_list(&body, fetched)?, age)))
+}
+
+fn parse_list(body: &str, fetched: Instant) -> Result<Vec<Server>> {
     let body = body.trim_start();
     // Throttling comes back as HTTP 200 with a plain-text body.
     if !body.starts_with('[') {
@@ -295,7 +343,6 @@ fn parse_list(body: &str) -> Result<Vec<Server>> {
         bail!("the lobby sent something that isn't a server list: {first}");
     }
     let list: Vec<Value> = serde_json::from_str(body).context("parsing the server list")?;
-    let fetched = Instant::now();
     Ok(list.iter().filter_map(|v| parse_server(v, None, fetched)).collect())
 }
 

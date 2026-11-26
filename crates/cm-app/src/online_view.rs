@@ -6,7 +6,8 @@
 //! thread; results carry a generation number so a late answer never overwrites a
 //! newer request.
 
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddrV4;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,14 +29,19 @@ use crate::events_view::Running;
 use crate::nav::{InputDevice, NavAction};
 use crate::text_input::TextInput;
 use crate::theme;
-use crate::widgets::{button, chip, focus_ring, panel, picture, section_title, track_map};
+use crate::widgets::{button, chip, focus_ring, panel, picture, section_title, segmented, track_map};
 
 impl EventEmitter<Running> for OnlineView {}
 
-const MAX_W: f32 = 1120.;
+/// Past this the rows only grow empty space between columns.
+const MAX_W: f32 = 1800.;
 const ROW_H: f32 = 64.;
 const CAR_CARD_W: f32 = 210.;
 const GAP: f32 = 12.;
+/// Car stats shown in the server page's Details view, as `ui_car.json` spec keys.
+const CAR_STATS: [(&str, &str); 6] =
+    [("bhp", "Power"), ("torque", "Torque"), ("weight", "Weight"), ("pwratio", "Power/weight"), ("topspeed", "Top speed"), ("acceleration", "0–100")];
+const STAT_W: f32 = 104.;
 /// Revisiting the tab refreshes a list older than this.
 const STALE_AFTER: Duration = Duration::from_secs(120);
 const PING_POLL: Duration = Duration::from_millis(250);
@@ -46,6 +52,16 @@ pub enum Source {
     Lobby,
     Favourites,
     Recent,
+}
+
+impl Source {
+    fn index(self) -> usize {
+        match self {
+            Source::Lobby => 0,
+            Source::Favourites => 1,
+            Source::Recent => 2,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -69,30 +85,45 @@ impl Filter {
     }
 }
 
+/// A sortable list column.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Sort {
-    Drivers,
     Ping,
     Name,
+    Track,
+    Drivers,
 }
 
 impl Sort {
-    const ALL: [Sort; 3] = [Sort::Drivers, Sort::Ping, Sort::Name];
+    /// The sortable columns, in header order (also the pad's focus order).
+    const ALL: [Sort; 4] = [Sort::Ping, Sort::Name, Sort::Track, Sort::Drivers];
 
     fn label(self) -> &'static str {
         match self {
-            Sort::Drivers => "Drivers",
             Sort::Ping => "Ping",
-            Sort::Name => "Name",
+            Sort::Name => "Server",
+            Sort::Track => "Track",
+            Sort::Drivers => "Drivers",
         }
     }
+
+    /// The direction a first click picks: most drivers first, else lowest / A to Z.
+    fn default_desc(self) -> bool {
+        self == Sort::Drivers
+    }
+}
+
+/// How the server page lists its cars.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CarView {
+    Cards,
+    Details,
 }
 
 /// Focusable controls above the list, left to right.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BarItem {
     Filter(Filter),
-    Sort(Sort),
     Refresh,
     AddServer,
 }
@@ -100,7 +131,40 @@ enum BarItem {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Bar(usize),
+    /// A column header, by index into `Sort::ALL`.
+    Header(usize),
     List,
+}
+
+/// Column widths of the server list, shared by the header and the rows.
+struct Cols {
+    star: f32,
+    ping: f32,
+    name: f32,
+    track: f32,
+    cars: f32,
+    drivers: f32,
+    info: f32,
+}
+
+impl Cols {
+    fn new(width: f32) -> Self {
+        let track = (width * 0.17).clamp(170., 300.);
+        let cars = (width * 0.17).clamp(170., 300.);
+        let (star, ping, drivers, info) = (24., 60., 72., 104.);
+        // Six 12 px gaps between seven cells, 12 px padding each side.
+        let fixed = star + ping + track + cars + drivers + info + 6. * GAP + 24.;
+        Self { star, ping, name: (width - fixed).max(180.), track, cars, drivers, info }
+    }
+
+    fn of(&self, sort: Sort) -> f32 {
+        match sort {
+            Sort::Ping => self.ping,
+            Sort::Name => self.name,
+            Sort::Track => self.track,
+            Sort::Drivers => self.drivers,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -126,6 +190,9 @@ pub struct Installed {
 struct InstalledCar {
     id: String,
     name: String,
+    /// Brand, class and year, for the Details view.
+    about: String,
+    specs: Vec<(String, String)>,
     /// Skin id and preview image, in the scan's order.
     skins: Vec<(String, Option<PathBuf>)>,
 }
@@ -145,9 +212,12 @@ impl Installed {
         let cars = cars
             .iter()
             .map(|c| {
+                let about = [&c.brand, &c.class, &c.year].into_iter().flatten().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
                 let car = InstalledCar {
                     id: c.id.clone(),
                     name: c.name.clone(),
+                    about,
+                    specs: c.specs.clone(),
                     skins: c.skins.iter().map(|s| (s.id.clone(), s.preview.clone())).collect(),
                 };
                 (c.id.to_lowercase(), car)
@@ -224,6 +294,19 @@ struct CarChoice {
     free: usize,
     total: usize,
     preview: Option<PathBuf>,
+    about: String,
+    specs: Vec<(String, String)>,
+}
+
+impl CarChoice {
+    /// A `ui_car.json` spec as written, or a dash when the car doesn't say. Kunos writes
+    /// unknown values as placeholders such as `--km/h` or `--s 0-100`, so no digit = unknown.
+    fn spec(&self, key: &str) -> String {
+        let value = self.specs.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.trim()).unwrap_or_default();
+        // The column title already says 0–100.
+        let value = value.trim_end_matches("0-100").trim_end_matches("0–100").trim();
+        if value.chars().any(|c| c.is_ascii_digit()) { value.to_owned() } else { "—".into() }
+    }
 }
 
 pub struct OnlineView {
@@ -247,8 +330,14 @@ pub struct OnlineView {
     /// Last request sent to the lobby, for its rate limit.
     lobby_asked: Option<Instant>,
     lobby_generation: u64,
+    /// The list shown came from the disk cache, not this session's download.
+    lobby_cached: bool,
+    cache_tried: bool,
 
     pings: HashMap<SocketAddrV4, u32>,
+    /// Addresses already sent to a pinger, so overlapping rounds don't ping twice (which
+    /// doubles the rate and loses replies).
+    ping_queued: HashSet<SocketAddrV4>,
     pingers: Vec<Pinger>,
     /// A poll loop is running; it stops itself once every pinger is done.
     ping_polling: bool,
@@ -262,7 +351,8 @@ pub struct OnlineView {
 
     search: Entity<TextInput>,
     filters: [bool; 4],
-    sort: Sort,
+    /// Column and descending, per source; `None` keeps the list's own order.
+    sorts: [Option<(Sort, bool)>; 3],
     visible: Vec<RowRef>,
     selected: usize,
     focus: Focus,
@@ -277,10 +367,12 @@ pub struct OnlineView {
     detail_generation: u64,
     password: Entity<TextInput>,
     detail_scroll: ScrollHandle,
+    car_view: CarView,
     car_cols: usize,
-    /// Child index of the password row and of the first row of car cards in the
-    /// server page's scroll container, as last rendered.
+    /// Child index of the password row, the car view toggle and the first row of cars in
+    /// the server page's scroll container, as last rendered.
     password_child: usize,
+    view_child: usize,
     cars_child: usize,
 }
 
@@ -312,7 +404,10 @@ impl OnlineView {
             lobby_at: None,
             lobby_asked: None,
             lobby_generation: 0,
+            lobby_cached: false,
+            cache_tried: false,
             pings: HashMap::new(),
+            ping_queued: HashSet::new(),
             pingers: Vec::new(),
             ping_polling: false,
             store,
@@ -321,7 +416,7 @@ impl OnlineView {
             passwords: HashMap::new(),
             search,
             filters: [true, false, false, false],
-            sort: Sort::Drivers,
+            sorts: [Some((Sort::Drivers, true)), None, None],
             visible: Vec::new(),
             selected: 0,
             focus: Focus::List,
@@ -334,8 +429,10 @@ impl OnlineView {
             detail_generation: 0,
             password,
             detail_scroll: ScrollHandle::new(),
+            car_view: CarView::Cards,
             car_cols: 4,
             password_child: 0,
+            view_child: 0,
             cars_child: 0,
         };
         view.set_source(source, cx);
@@ -367,6 +464,9 @@ impl OnlineView {
         }
         match source {
             Source::Lobby => {
+                if self.lobby.is_empty() && !self.cache_tried {
+                    self.load_cached_lobby(cx);
+                }
                 let stale = self.lobby_at.is_none_or(|t| t.elapsed() > STALE_AFTER);
                 if stale && !self.lobby_loading && (self.lobby_error.is_none() || !self.lobby.is_empty()) {
                     self.refresh_lobby(cx);
@@ -470,6 +570,37 @@ impl OnlineView {
 
     // ---------- lobby ----------
 
+    /// Shows the last downloaded list while the fresh one downloads, and pings it meanwhile.
+    fn load_cached_lobby(&mut self, cx: &mut Context<Self>) {
+        self.cache_tried = true;
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { online::cached_lobby() }).await;
+            let _ = this.update(cx, |this, cx| match result {
+                // A fresh list that already arrived wins.
+                Ok(Some((servers, age))) if this.lobby.is_empty() => {
+                    this.lobby = servers;
+                    this.lobby_cached = true;
+                    this.lobby_at = Instant::now().checked_sub(age);
+                    this.rebuild_search();
+                    this.refilter(cx);
+                    let order = this.lobby_ping_order();
+                    this.start_ping(order, false, cx);
+                }
+                Ok(_) => {}
+                // The download replaces the cache, so this only costs the head start.
+                Err(e) => this.message = Some((format!("Couldn't read the saved server list: {e:#}"), true)),
+            });
+        })
+        .detach();
+    }
+
+    /// Shown rows first, so the ones on screen get a ping within a second, then the rest by drivers.
+    fn lobby_ping_order(&self) -> Vec<SocketAddrV4> {
+        let mut rest: Vec<&Server> = self.lobby.iter().collect();
+        rest.sort_by_key(|s| std::cmp::Reverse(s.clients));
+        self.visible.iter().filter_map(|r| self.row_server(*r)).chain(rest).filter_map(Server::udp_addr).collect()
+    }
+
     fn refresh_lobby(&mut self, cx: &mut Context<Self>) {
         if self.lobby_loading {
             return;
@@ -510,20 +641,25 @@ impl OnlineView {
                 }
                 this.lobby_loading = false;
                 match result {
-                    Ok(servers) => {
-                        this.lobby = servers;
+                    Ok(list) => {
+                        this.lobby = list.servers;
+                        this.lobby_cached = false;
                         this.lobby_at = Some(Instant::now());
+                        if let Some(e) = list.cache_error {
+                            this.message = Some((format!("Couldn't save the server list for next time: {e:#}"), true));
+                        }
                         this.rebuild_search();
-                        // Populated servers first: their rows are the ones people look at.
-                        let mut order: Vec<&Server> = this.lobby.iter().collect();
-                        order.sort_by_key(|s| std::cmp::Reverse(s.clients));
-                        let targets = order.into_iter().filter_map(Server::udp_addr).collect();
-                        this.start_ping(targets, cx);
+                        this.refilter(cx);
+                        // Servers pinged from the cached list keep their ping; only new ones are asked.
+                        let order = this.lobby_ping_order();
+                        this.start_ping(order, false, cx);
                     }
                     // Keep showing the previous list; the error explains why it is old.
-                    Err(e) => this.lobby_error = Some(format!("{e:#}")),
+                    Err(e) => {
+                        this.lobby_error = Some(format!("{e:#}"));
+                        this.refilter(cx);
+                    }
                 }
-                this.refilter(cx);
             });
         })
         .detach();
@@ -549,7 +685,19 @@ impl OnlineView {
             .collect();
     }
 
-    fn start_ping(&mut self, targets: Vec<SocketAddrV4>, cx: &mut Context<Self>) {
+    /// Pings the targets in order. Without `force`, servers that have a ping or are queued are
+    /// skipped; `force` is for a few saved servers, where pinging one twice costs nothing.
+    fn start_ping(&mut self, targets: Vec<SocketAddrV4>, force: bool, cx: &mut Context<Self>) {
+        let targets: Vec<SocketAddrV4> = targets
+            .into_iter()
+            .filter(|a| {
+                let fresh = self.ping_queued.insert(*a);
+                force || (fresh && !self.pings.contains_key(a))
+            })
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
         match Pinger::start(targets) {
             Ok(p) => self.pingers.push(p),
             Err(e) => {
@@ -571,7 +719,7 @@ impl OnlineView {
                     let before = this.pingers.len();
                     this.pingers.retain(|p| !p.is_done());
                     // Re-sort once a round finishes, not while rows would jump around.
-                    if this.pingers.len() < before && this.sort == Sort::Ping {
+                    if this.pingers.len() < before && this.sort().is_some_and(|(s, _)| s == Sort::Ping) {
                         this.refilter(cx);
                     }
                     cx.notify();
@@ -643,9 +791,7 @@ impl OnlineView {
                     };
                     this.lookups.insert(address, lookup);
                 }
-                if !targets.is_empty() {
-                    this.start_ping(targets, cx);
-                }
+                this.start_ping(targets, force, cx);
                 this.refilter(cx);
             });
         })
@@ -772,36 +918,72 @@ impl OnlineView {
                 .map(RowRef::Saved)
                 .collect(),
         };
-        if self.source == Source::Lobby {
-            let lobby = &self.lobby;
-            match self.sort {
-                Sort::Drivers => rows.sort_by(|a, b| {
-                    let (RowRef::Lobby(a), RowRef::Lobby(b)) = (*a, *b) else { return std::cmp::Ordering::Equal };
-                    let (a, b) = (&lobby[a], &lobby[b]);
-                    b.clients
-                        .cmp(&a.clients)
-                        .then_with(|| self.ping_of(a).unwrap_or(u32::MAX).cmp(&self.ping_of(b).unwrap_or(u32::MAX)))
-                }),
-                Sort::Ping => rows.sort_by_key(|r| match *r {
-                    RowRef::Lobby(i) => self.ping_of(&lobby[i]).unwrap_or(u32::MAX),
-                    RowRef::Saved(_) => u32::MAX,
-                }),
-                Sort::Name => rows.sort_by(|a, b| match (*a, *b) {
-                    (RowRef::Lobby(a), RowRef::Lobby(b)) => content::natural_cmp(&lobby[a].name, &lobby[b].name),
-                    _ => std::cmp::Ordering::Equal,
-                }),
-            }
+        if let Some((key, desc)) = self.sort() {
+            rows = self.sorted(rows, key, desc);
         }
         self.visible = rows;
         self.selected = self.selected.min(self.visible.len().saturating_sub(1));
         cx.notify();
     }
 
+    fn sort(&self) -> Option<(Sort, bool)> {
+        self.sorts[self.source.index()]
+    }
+
+    fn row_title(&self, row: RowRef) -> String {
+        match (self.row_server(row), row) {
+            (Some(s), _) => s.name.clone(),
+            (None, RowRef::Saved(i)) => self.saved_list()[i].name.clone(),
+            (None, RowRef::Lobby(_)) => String::new(),
+        }
+    }
+
+    /// Rows without the value (no ping yet, server offline) go last in both directions.
+    fn sorted(&self, rows: Vec<RowRef>, key: Sort, desc: bool) -> Vec<RowRef> {
+        // Keys are computed once per row; search re-sorts on every keystroke.
+        let mut keyed: Vec<(RowRef, Option<u32>, Option<u32>, String)> = rows
+            .into_iter()
+            .map(|r| {
+                let s = self.row_server(r);
+                let ping = s.and_then(|s| self.ping_of(s));
+                let drivers = s.map(|s| s.clients);
+                let text = match key {
+                    Sort::Name => self.row_title(r).to_lowercase(),
+                    Sort::Track => s.map(|s| self.track_name(&s.track).to_lowercase()).unwrap_or_default(),
+                    _ => String::new(),
+                };
+                (r, ping, drivers, text)
+            })
+            .collect();
+        let flip = |o: Ordering| if desc { o.reverse() } else { o };
+        keyed.sort_by(|a, b| match key {
+            Sort::Ping => missing_last(a.1, b.1, flip),
+            // Equal driver counts: the nearer server first.
+            Sort::Drivers => missing_last(a.2, b.2, flip).then_with(|| missing_last(a.1, b.1, |o| o)),
+            Sort::Name | Sort::Track => match (a.3.is_empty(), b.3.is_empty()) {
+                (false, false) => flip(content::natural_cmp(&a.3, &b.3)),
+                (x, y) => x.cmp(&y),
+            },
+        });
+        keyed.into_iter().map(|k| k.0).collect()
+    }
+
+    /// A column header was pressed: the same column flips direction, another starts at its default.
+    fn click_sort(&mut self, key: Sort, cx: &mut Context<Self>) {
+        let slot = &mut self.sorts[self.source.index()];
+        *slot = Some(match *slot {
+            Some((k, desc)) if k == key => (key, !desc),
+            _ => (key, key.default_desc()),
+        });
+        self.selected = 0;
+        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+        self.refilter(cx);
+    }
+
     fn bar_items(&self) -> Vec<BarItem> {
         let mut items = Vec::new();
         if self.source == Source::Lobby {
             items.extend(Filter::ALL.map(BarItem::Filter));
-            items.extend(Sort::ALL.map(BarItem::Sort));
         }
         items.push(BarItem::Refresh);
         if self.source == Source::Favourites {
@@ -815,12 +997,6 @@ impl OnlineView {
             BarItem::Filter(f) => {
                 let i = Filter::ALL.iter().position(|x| *x == f).unwrap_or(0);
                 self.filters[i] = !self.filters[i];
-                self.selected = 0;
-                self.scroll.scroll_to_item(0, ScrollStrategy::Top);
-                self.refilter(cx);
-            }
-            BarItem::Sort(s) => {
-                self.sort = s;
                 self.selected = 0;
                 self.scroll.scroll_to_item(0, ScrollStrategy::Top);
                 self.refilter(cx);
@@ -892,17 +1068,28 @@ impl OnlineView {
         d.error = None;
         let generation = d.generation;
         let address = d.address.clone();
+        // Known from the lobby row; lets the extended info load alongside /INFO.
+        let seed_port = d.server.as_ref().map(Server::details_port);
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let (ip, port) = online::resolve(&address)?;
-                    let server = online::server_info(&ip, port)?;
-                    let slots = online::car_slots(&ip, port, &guid).map_err(|e| format!("{e:#}"));
-                    // Vanilla servers have no extended info; that is not an error.
-                    let details = online::details(&ip, server.details_port(), &guid).ok();
-                    anyhow::Ok((server, slots, details))
+                    let (ip, guid) = (&ip, &guid);
+                    // Three requests to the same server, side by side instead of one after another.
+                    std::thread::scope(|scope| {
+                        let slots = scope.spawn(move || online::car_slots(ip, port, guid).map_err(|e| format!("{e:#}")));
+                        // Vanilla servers have no extended info; that is not an error.
+                        let early = seed_port.map(|p| (p, scope.spawn(move || online::details(ip, p, guid).ok())));
+                        let server = online::server_info(ip, port)?;
+                        let details = match early {
+                            Some((p, h)) if p == server.details_port() => h.join().ok().flatten(),
+                            _ => online::details(ip, server.details_port(), guid).ok(),
+                        };
+                        let slots = slots.join().unwrap_or_else(|_| Err("the car list request crashed".into()));
+                        anyhow::Ok((server, slots, details))
+                    })
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -948,6 +1135,8 @@ impl OnlineView {
                     // Without the entry list, assume the car can be tried.
                     total: if d.slots.as_ref().is_some_and(|r| r.is_ok()) { of.len() } else { usize::MAX },
                     preview,
+                    about: car.map(|c| c.about.clone()).unwrap_or_default(),
+                    specs: car.map(|c| c.specs.clone()).unwrap_or_default(),
                 }
             })
             .collect()
@@ -1143,8 +1332,12 @@ impl OnlineView {
             return true;
         }
         let items = self.bar_items();
-        if self.visible.is_empty() && self.focus == Focus::List {
+        if self.visible.is_empty() && matches!(self.focus, Focus::List | Focus::Header(_)) {
             self.focus = Focus::Bar(0);
+        }
+        // Favourites and Recent have fewer bar items than the lobby.
+        if let Focus::Bar(i) = self.focus {
+            self.focus = Focus::Bar(i.min(items.len().saturating_sub(1)));
         }
         let handled = match (name, self.focus) {
             ("START", _) => {
@@ -1155,9 +1348,35 @@ impl OnlineView {
                 if !self.is_pad() {
                     self.search.read(cx).focus(window);
                 } else {
-                    let at = Sort::ALL.iter().position(|s| *s == self.sort).unwrap_or(0);
-                    self.activate(BarItem::Sort(Sort::ALL[(at + 1) % Sort::ALL.len()]), window, cx);
+                    // Next column at its default direction; A on a header flips it.
+                    let at = self.sort().and_then(|(k, _)| Sort::ALL.iter().position(|s| *s == k));
+                    let next = Sort::ALL[at.map_or(0, |i| (i + 1) % Sort::ALL.len())];
+                    self.sorts[self.source.index()] = Some((next, next.default_desc()));
+                    self.selected = 0;
+                    self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+                    self.refilter(cx);
                 }
+                true
+            }
+            ("DPAD_LEFT", Focus::Header(i)) => {
+                self.focus = Focus::Header(i.saturating_sub(1));
+                true
+            }
+            ("DPAD_RIGHT", Focus::Header(i)) => {
+                self.focus = Focus::Header((i + 1).min(Sort::ALL.len() - 1));
+                true
+            }
+            ("DPAD_UP", Focus::Header(_)) => {
+                self.focus = Focus::Bar(0);
+                true
+            }
+            ("DPAD_DOWN", Focus::Header(_)) => {
+                self.focus = Focus::List;
+                self.scroll.scroll_to_item(self.selected, ScrollStrategy::Center);
+                true
+            }
+            ("A", Focus::Header(i)) => {
+                self.click_sort(Sort::ALL[i], cx);
                 true
             }
             ("DPAD_LEFT", Focus::Bar(i)) => {
@@ -1169,9 +1388,9 @@ impl OnlineView {
                 true
             }
             ("DPAD_DOWN", Focus::Bar(_)) => {
+                // The header row only shows above rows.
                 if !self.visible.is_empty() {
-                    self.focus = Focus::List;
-                    self.scroll.scroll_to_item(self.selected, ScrollStrategy::Center);
+                    self.focus = Focus::Header(self.header_focus());
                 }
                 true
             }
@@ -1184,7 +1403,7 @@ impl OnlineView {
             ("DPAD_UP", Focus::Bar(_)) => true,
             ("DPAD_UP", Focus::List) => {
                 if self.selected == 0 {
-                    self.focus = Focus::Bar(0);
+                    self.focus = Focus::Header(self.header_focus());
                 } else {
                     self.selected -= 1;
                     self.scroll.scroll_to_item(self.selected, ScrollStrategy::Center);
@@ -1214,20 +1433,43 @@ impl OnlineView {
         handled
     }
 
+    /// Server page focus stops: the password field when needed (0), the car view toggle, then the cars.
+    fn detail_stops(&self) -> (bool, usize, usize) {
+        let password = self.needs_password();
+        let toggle = usize::from(password);
+        (password, toggle, toggle + 1)
+    }
+
+    fn car_columns(&self) -> usize {
+        match self.car_view {
+            CarView::Cards => self.car_cols.max(1),
+            CarView::Details => 1,
+        }
+    }
+
+    fn set_car_view(&mut self, view: CarView, cx: &mut Context<Self>) {
+        self.car_view = view;
+        cx.notify();
+    }
+
     fn detail_pad(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let offset = usize::from(self.needs_password());
+        let (password, toggle, offset) = self.detail_stops();
         let cars = self.car_choices();
         let n = offset + cars.len();
-        let cols = self.car_cols.max(1);
+        let cols = self.car_columns();
+        let view = self.car_view;
         let Some(d) = self.detail.as_mut() else { return false };
         d.focus = d.focus.min(n.saturating_sub(1));
         let at = d.focus;
         let car_at = at.checked_sub(offset);
+        let mut new_view = None;
         match name {
             "B" => self.close_detail(cx),
             "START" => self.join(cx),
             "X" => self.toggle_detail_favourite(cx),
             "Y" => self.load_detail(cx),
+            "DPAD_LEFT" if at == toggle => new_view = Some(CarView::Cards),
+            "DPAD_RIGHT" if at == toggle => new_view = Some(CarView::Details),
             "DPAD_LEFT" => {
                 if let Some(c) = car_at.filter(|c| c % cols > 0) {
                     d.focus = offset + c - 1;
@@ -1240,10 +1482,12 @@ impl OnlineView {
             }
             "DPAD_UP" => match car_at {
                 Some(c) if c >= cols => d.focus = offset + c - cols,
-                Some(_) if offset == 1 => d.focus = 0,
-                _ => {}
+                Some(_) => d.focus = toggle,
+                None if at == toggle && password => d.focus = 0,
+                None => {}
             },
             "DPAD_DOWN" => match car_at {
+                None if at < toggle => d.focus = toggle,
                 None if !cars.is_empty() => d.focus = offset,
                 Some(c) if c + cols < cars.len() => d.focus = offset + c + cols,
                 // Last row: drop to the last card so Down always moves when there is a row below.
@@ -1251,20 +1495,30 @@ impl OnlineView {
                 _ => {}
             },
             "A" => match car_at {
-                None if offset == 1 => self.password.read(cx).focus(window),
+                None if password && at == 0 => self.password.read(cx).focus(window),
+                None => {
+                    new_view = Some(match view {
+                        CarView::Cards => CarView::Details,
+                        CarView::Details => CarView::Cards,
+                    })
+                }
                 Some(c) => {
                     if let Some(choice) = cars.get(c).filter(|c| Self::choice_available(c)) {
                         let id = choice.id.clone();
                         self.select_car(id, cx);
                     }
                 }
-                None => {}
             },
             _ => return false,
         }
+        if let Some(v) = new_view {
+            self.set_car_view(v, cx);
+        }
         if let Some(d) = &self.detail {
+            let cols = self.car_columns();
             let child = match d.focus.checked_sub(offset) {
                 Some(c) => self.cars_child + c / cols,
+                None if d.focus == toggle => self.view_child,
                 None => self.password_child,
             };
             self.detail_scroll.scroll_to_item(child);
@@ -1273,9 +1527,14 @@ impl OnlineView {
         true
     }
 
+    /// Header focus starts on the sorted column.
+    fn header_focus(&self) -> usize {
+        self.sort().and_then(|(k, _)| Sort::ALL.iter().position(|s| *s == k)).unwrap_or(0)
+    }
+
     // ---------- rendering ----------
 
-    fn render_row(&self, vis: usize, width: f32, cx: &mut Context<Self>) -> AnyElement {
+    fn render_row(&self, vis: usize, cols: &Cols, cx: &mut Context<Self>) -> AnyElement {
         let row = self.visible[vis];
         let focused = self.shows_focus() && self.focus == Focus::List && self.selected == vis;
         let (address, saved_name) = match row {
@@ -1291,14 +1550,32 @@ impl OnlineView {
             RowRef::Lobby(_) => None,
         };
         let server = self.row_server(row);
-        // Columns: ping 52, drivers 60, badges 150, cars 230, gaps and padding 72; the name takes the rest.
-        let cars_w = 230.;
-        let name_w = (width - 52. - 60. - 150. - cars_w - 72.).max(160.);
+        let title: SharedString = server.map(|s| s.name.clone()).or(saved_name).unwrap_or_else(|| address.clone()).into();
+
+        let star = {
+            let (address, name) = (address.clone(), title.to_string());
+            div()
+                .id(("online-star", vis))
+                .w(px(cols.star))
+                .flex_shrink_0()
+                .flex()
+                .justify_center()
+                .text_lg()
+                .cursor_pointer()
+                .text_color(if favourite { theme::accent() } else { theme::faint() })
+                .hover(|s| s.text_color(theme::accent()))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    // The row behind opens the server; the star only toggles.
+                    cx.stop_propagation();
+                    this.toggle_favourite(address.clone(), name.clone(), cx);
+                }))
+                .child(if favourite { "★" } else { "☆" })
+        };
 
         let ping = server.and_then(|s| self.ping_of(s));
         let pinging = !self.pingers.is_empty();
         let ping_el = div()
-            .w(px(52.))
+            .w(px(cols.ping))
             .flex_shrink_0()
             .text_sm()
             .text_right()
@@ -1313,33 +1590,35 @@ impl OnlineView {
                 None => "—".into(),
             });
 
-        let title: SharedString = server.map(|s| s.name.clone()).or(saved_name).unwrap_or_else(|| address.clone()).into();
         let (sub, sub_warn): (String, bool) = match (server, lookup) {
-            (Some(s), _) => (format!("{} · {}", self.track_name(&s.track), session_text(s)), false),
+            (Some(s), _) => {
+                let mut sub = session_text(s);
+                if !s.country.is_empty() && !s.country.eq_ignore_ascii_case("na") {
+                    sub.push_str(" · ");
+                    sub.push_str(&s.country);
+                }
+                (sub, false)
+            }
             (None, Some(Lookup::Failed(e))) => (format!("Offline · {e}"), true),
             _ => (format!("{address} · asking the server…"), false),
         };
-        let name_el = div()
-            .w(px(name_w))
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .child(div().w(px(name_w)).text_sm().font_weight(FontWeight::SEMIBOLD).truncate().child(title))
-            .child(
-                div()
-                    .w(px(name_w))
-                    .text_xs()
-                    .text_color(if sub_warn { theme::error() } else { theme::muted() })
-                    .truncate()
-                    .child(sub),
-            );
+        let name_el = two_lines(cols.name, title, sub, sub_warn, true);
 
-        let (cars_text, cars_warn) = match server {
-            Some(s) if self.installed.track(&s.track).is_none() => ("Track not installed".to_owned(), true),
-            Some(s) if !self.installed.has_any_car(s) => ("Cars not installed".to_owned(), true),
-            Some(s) if !self.csp_ok(s) => (format!("Needs CSP {}+", s.required_csp.unwrap_or(0)), true),
+        let installed_track = server.and_then(|s| self.installed.track(&s.track));
+        let track_el = match server {
             Some(s) => {
-                // One name plus a count: two names overflowed the column, and GPUI clipped them without an ellipsis.
+                let (line2, warn) = match installed_track {
+                    Some(t) => (t.length.as_deref().map(crate::app::format_track_length).unwrap_or_default(), false),
+                    None => ("Not installed".to_owned(), true),
+                };
+                two_lines(cols.track, self.track_name(&s.track).into(), line2, warn, false)
+            }
+            None => div().w(px(cols.track)).flex_shrink_0(),
+        };
+
+        let cars_el = match server {
+            Some(s) => {
+                // One name plus a count: GPUI clipped two names without an ellipsis.
                 let first = s.cars.first().map(|c| self.installed.car(c).map(|x| x.name.clone()).unwrap_or_else(|| c.clone())).unwrap_or_default();
                 let mut text: String = first.chars().take(30).collect();
                 if first.chars().count() > 30 {
@@ -1349,27 +1628,28 @@ impl OnlineView {
                 if more > 0 {
                     text.push_str(&format!(" +{more}"));
                 }
-                (text, false)
+                let (line2, warn) = if !self.installed.has_any_car(s) {
+                    ("Not installed".to_owned(), true)
+                } else if !self.csp_ok(s) {
+                    (format!("Needs CSP {}+", s.required_csp.unwrap_or(0)), true)
+                } else {
+                    let have = s.cars.iter().filter(|c| self.installed.car(c).is_some()).count();
+                    (if have == s.cars.len() { String::new() } else { format!("{have} of {} installed", s.cars.len()) }, false)
+                };
+                two_lines(cols.cars, text.into(), line2, warn, false)
             }
-            None => (String::new(), false),
+            None => div().w(px(cols.cars)).flex_shrink_0(),
         };
-        let cars_el = div()
-            .w(px(cars_w))
-            .flex_shrink_0()
-            .text_xs()
-            .text_color(if cars_warn { theme::error() } else { theme::muted() })
-            .truncate()
-            .child(cars_text);
 
         let drivers_el = div()
-            .w(px(60.))
+            .w(px(cols.drivers))
             .flex_shrink_0()
             .text_sm()
             .text_right()
             .text_color(if server.is_some_and(|s| s.clients > 0) { theme::text() } else { theme::muted() })
             .child(server.map(|s| format!("{}/{}", s.clients, s.max_clients)).unwrap_or_default());
 
-        let mut badges = div().w(px(150.)).flex_shrink_0().flex().items_center().justify_end().gap_1();
+        let mut badges = div().w(px(cols.info)).flex_shrink_0().flex().items_center().justify_end().gap_1();
         if let Some(s) = server {
             if s.password {
                 badges = badges.child(badge("Password"));
@@ -1377,9 +1657,6 @@ impl OnlineView {
             if !s.pickup {
                 badges = badges.child(badge("Booking"));
             }
-        }
-        if favourite {
-            badges = badges.child(div().text_sm().text_color(theme::accent()).child("★"));
         }
 
         let el = div()
@@ -1389,7 +1666,7 @@ impl OnlineView {
             .px_3()
             .flex()
             .items_center()
-            .gap_3()
+            .gap(px(GAP))
             .rounded(px(theme::RADIUS_SM))
             .cursor_pointer()
             .hover(|s| s.bg(theme::panel_hover()))
@@ -1398,12 +1675,52 @@ impl OnlineView {
                 this.focus = Focus::List;
                 this.open_selected(cx);
             }))
+            .child(star)
             .child(ping_el)
             .child(name_el)
+            .child(track_el)
             .child(cars_el)
             .child(drivers_el)
             .child(badges);
         focus_ring(el, focused).into_any_element()
+    }
+
+    /// Column titles above the rows; the sortable ones sort on click and show the direction.
+    fn header_row(&self, cols: &Cols, cx: &mut Context<Self>) -> gpui::Div {
+        let sort = self.sort();
+        let label = |text: &'static str, w: f32, right: bool| {
+            div().w(px(w)).flex_shrink_0().flex().when(right, |d| d.justify_end()).text_xs().text_color(theme::faint()).child(text.to_uppercase())
+        };
+        let mut row = div().h(px(36.)).px_3().flex().items_center().gap(px(GAP)).border_b_1().border_color(theme::border());
+        row = row.child(div().w(px(cols.star)).flex_shrink_0());
+        for (i, key) in Sort::ALL.into_iter().enumerate() {
+            let active = sort.filter(|(k, _)| *k == key);
+            let right = matches!(key, Sort::Ping | Sort::Drivers);
+            let arrow = active.map(|(_, desc)| if desc { " ↓" } else { " ↑" }).unwrap_or("");
+            let cell = div()
+                .id(("online-col", i))
+                .w(px(cols.of(key)))
+                .flex_shrink_0()
+                .flex()
+                .when(right, |d| d.justify_end())
+                .rounded(px(theme::RADIUS_SM))
+                .cursor_pointer()
+                .text_xs()
+                .font_weight(if active.is_some() { FontWeight::BOLD } else { FontWeight::NORMAL })
+                .text_color(if active.is_some() { theme::accent() } else { theme::muted() })
+                .hover(|s| s.bg(theme::panel_hover()).text_color(theme::text()))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.focus = Focus::Header(i);
+                    this.click_sort(key, cx);
+                }))
+                .child(format!("{}{arrow}", key.label().to_uppercase()));
+            let focused = self.shows_focus() && self.focus == Focus::Header(i);
+            row = row.child(focus_ring(cell, focused));
+            if key == Sort::Track {
+                row = row.child(label("Cars", cols.cars, false));
+            }
+        }
+        row.child(label("", cols.info, true))
     }
 
     fn track_name(&self, id: &str) -> String {
@@ -1413,14 +1730,17 @@ impl OnlineView {
     fn bar(&self, cx: &mut Context<Self>) -> gpui::Div {
         let items = self.bar_items();
         let focused = |i: usize| self.shows_focus() && self.focus == Focus::Bar(i);
-        let mut chips = div().flex().flex_wrap().items_center().gap_2();
+        let mut filters = div().flex().flex_wrap().items_center().gap_2();
+        let mut actions = div().flex().items_center().gap_2().ml_auto();
+        if items.iter().any(|i| matches!(i, BarItem::Filter(_))) {
+            filters = filters.child(div().mr_1().text_xs().text_color(theme::faint()).child("SHOW ONLY"));
+        }
         for (i, item) in items.iter().enumerate() {
             let el: Stateful<gpui::Div> = match *item {
                 BarItem::Filter(f) => {
                     let on = self.filters[Filter::ALL.iter().position(|x| *x == f).unwrap_or(0)];
-                    chip(("online-filter", i), f.label(), on)
+                    filter_chip(("online-filter", i), f.label(), on)
                 }
-                BarItem::Sort(s) => chip(("online-sort", i), format!("Sort: {}", s.label()), self.sort == s),
                 BarItem::Refresh => {
                     let busy = match self.source {
                         Source::Lobby => self.lobby_loading,
@@ -1431,15 +1751,16 @@ impl OnlineView {
                 BarItem::AddServer => button("online-add", "Add server"),
             };
             let item = *item;
-            if i > 0 && matches!(item, BarItem::Sort(Sort::Drivers) | BarItem::Refresh) {
-                chips = chips.child(div().w(px(1.)).h(px(24.)).mx_1().bg(theme::border()));
-            }
-            chips = chips.child(focus_ring(el, focused(i)).on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+            let el = focus_ring(el, focused(i)).on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.focus = Focus::Bar(i);
                 this.activate(item, window, cx);
-            })));
+            }));
+            match item {
+                BarItem::Filter(_) => filters = filters.child(el),
+                _ => actions = actions.child(el),
+            }
         }
-        chips
+        div().flex().items_center().gap_3().child(filters).child(actions)
     }
 
     fn summary(&self) -> String {
@@ -1457,6 +1778,9 @@ impl OnlineView {
                 );
                 if let Some(t) = self.lobby_at {
                     text.push_str(&format!(" · updated {}", ago(t)));
+                }
+                if self.lobby_loading {
+                    text.push_str(" · refreshing…");
                 }
                 text
             }
@@ -1566,18 +1890,27 @@ impl OnlineView {
         let body = if self.visible.is_empty() {
             self.empty_state(cx)
         } else {
-            let row_w = col_w - 24.;
-            uniform_list(
+            // Panel padding and border, and the rows' 2 px focus border on each side.
+            let row_w = col_w - 14.;
+            let list = uniform_list(
                 "online-servers",
                 self.visible.len(),
                 cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                    range.map(|vis| this.render_row(vis, row_w, cx)).collect()
+                    let cols = Cols::new(row_w);
+                    range.map(|vis| this.render_row(vis, &cols, cx)).collect()
                 }),
             )
             .track_scroll(self.scroll.clone())
             .flex_1()
-            .size_full()
-            .into_any_element()
+            .size_full();
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(self.header_row(&Cols::new(row_w), cx).mx(px(2.)))
+                .child(list)
+                .into_any_element()
         };
 
         div()
@@ -1599,7 +1932,7 @@ impl OnlineView {
         let server = d.server.as_ref();
         let favourite = self.store.is_favourite(&d.address);
         let track = server.and_then(|s| self.installed.track(&s.track));
-        let offset = usize::from(self.needs_password());
+        let (_, toggle, offset) = self.detail_stops();
         let focus = d.focus;
         let show_focus = self.shows_focus();
 
@@ -1658,10 +1991,6 @@ impl OnlineView {
                 badges = badges.child(badge_owned(p.clone()));
             }
         }
-        if favourite {
-            badges = badges.child(badge("★ Favourite"));
-        }
-
         let hero = panel()
             .flex()
             .gap_4()
@@ -1687,7 +2016,10 @@ impl OnlineView {
                     .flex_shrink_0()
                     .child(button("online-back", "Back").on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close_detail(cx))))
                     .child(
-                        button("online-fav", if favourite { "Unfavourite" } else { "Favourite" })
+                        button("online-fav", if favourite { "★" } else { "☆" })
+                            .justify_center()
+                            .text_lg()
+                            .text_color(if favourite { theme::accent() } else { theme::muted() })
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_detail_favourite(cx))),
                     )
                     .child(
@@ -1733,6 +2065,7 @@ impl OnlineView {
         let cols = ((col_w + GAP) / (CAR_CARD_W + GAP)).floor().max(1.) as usize;
         self.car_cols = cols;
         let card_w = (col_w - GAP * (cols as f32 - 1.)) / cols as f32;
+        let view = self.car_view;
         let mut cards: Vec<Stateful<gpui::Div>> = Vec::new();
         for (i, c) in cars.iter().enumerate() {
             let available = Self::choice_available(c);
@@ -1747,13 +2080,14 @@ impl OnlineView {
                 (format!("{} of {} free", c.free, c.total), theme::ok())
             };
             let id = c.id.clone();
-            let card = div()
-                .id(("online-car", i))
-                .w(px(card_w))
+            let name_line = div()
                 .flex()
-                .flex_col()
+                .items_center()
                 .gap_1()
-                .p_2()
+                .child(div().flex_1().min_w_0().text_sm().font_weight(FontWeight::SEMIBOLD).truncate().child(c.name.clone()))
+                .when(selected, |d| d.child(div().text_sm().text_color(theme::accent()).child("✓")));
+            let base = div()
+                .id(("online-car", i))
                 .rounded(px(theme::RADIUS_MD))
                 .bg(if selected { theme::selected() } else { theme::panel() })
                 .when(!available, |d| d.opacity(0.55))
@@ -1764,17 +2098,40 @@ impl OnlineView {
                         }
                         this.select_car(id.clone(), cx);
                     }))
-                })
-                .child(picture(c.preview.clone(), 110.).w_full())
-                .child(
-                    div()
+                });
+            let card = match view {
+                CarView::Cards => base
+                    .w(px(card_w))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .child(picture(c.preview.clone(), 110.).w_full())
+                    .child(name_line)
+                    .child(div().text_xs().text_color(status.1).child(status.0)),
+                CarView::Details => {
+                    let mut row = base
+                        .w_full()
                         .flex()
                         .items_center()
-                        .gap_1()
-                        .child(div().flex_1().min_w_0().text_sm().font_weight(FontWeight::SEMIBOLD).truncate().child(c.name.clone()))
-                        .when(selected, |d| d.child(div().text_sm().text_color(theme::accent()).child("✓"))),
-                )
-                .child(div().text_xs().text_color(status.1).child(status.0));
+                        .gap(px(GAP))
+                        .p_2()
+                        .child(picture(c.preview.clone(), 56.).w(px(100.)).flex_shrink_0())
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(name_line)
+                                .child(div().text_xs().text_color(theme::muted()).truncate().child(c.about.clone())),
+                        );
+                    for (key, _) in CAR_STATS {
+                        row = row.child(div().w(px(STAT_W)).flex_shrink_0().text_sm().text_right().truncate().child(c.spec(key)));
+                    }
+                    row.child(div().w(px(120.)).flex_shrink_0().text_xs().text_right().text_color(status.1).child(status.0))
+                }
+            };
             let focused = show_focus && focus == offset + i;
             // The focus ring is the accent, so with a pad or keyboard the picked car gets a neutral
             // outline (plus its ✓); with a mouse there is no ring and the pick takes the accent.
@@ -1785,6 +2142,21 @@ impl OnlineView {
             };
             cards.push(card);
         }
+        let view_toggle = {
+            let item = |i: usize, label: &'static str, v: CarView| {
+                chip(("online-carview", i), label, view == v).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    if let Some(det) = this.detail.as_mut() {
+                        det.focus = toggle;
+                    }
+                    this.set_car_view(v, cx);
+                }))
+            };
+            let el = div().id("online-carview").p(px(2.)).rounded(px(theme::RADIUS_SM)).child(segmented(vec![
+                item(0, "Cards", CarView::Cards),
+                item(1, "Details", CarView::Details),
+            ]));
+            focus_ring(el, show_focus && focus == toggle)
+        };
         let loading = d.loading;
 
         // One child per row so the pad can scroll a focused row into view.
@@ -1795,17 +2167,36 @@ impl OnlineView {
         }
         self.password_child = children.len();
         children.extend(password_row.map(|r| r.into_any_element()));
+        self.view_child = children.len();
         if reachable {
-            children.push(section_title("Pick a car").into_any_element());
+            children.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(section_title("Pick a car"))
+                    .child(view_toggle)
+                    .into_any_element(),
+            );
+            if view == CarView::Details && !cars.is_empty() {
+                // Column titles, aligned with the rows' picture, name and stat cells.
+                let mut head = div().flex().items_center().gap(px(GAP)).px(px(10.)).text_xs().text_color(theme::faint());
+                head = head.child(div().w(px(100.)).flex_shrink_0()).child(div().flex_1().child("CAR"));
+                for (_, label) in CAR_STATS {
+                    head = head.child(div().w(px(STAT_W)).flex_shrink_0().text_right().child(label.to_uppercase()));
+                }
+                children.push(head.child(div().w(px(120.)).flex_shrink_0().text_right().child("SLOTS")).into_any_element());
+            }
         }
         self.cars_child = children.len();
         if cards.is_empty() && reachable {
             let text = if loading { "Loading cars…" } else { "The server lists no cars." };
             children.push(div().text_sm().text_color(theme::muted()).child(text).into_any_element());
         }
+        let per_row = if view == CarView::Details { 1 } else { cols };
         let mut cards = cards.into_iter().peekable();
         while cards.peek().is_some() {
-            let row: Vec<_> = cards.by_ref().take(cols).collect();
+            let row: Vec<_> = cards.by_ref().take(per_row).collect();
             children.push(div().flex().gap(px(GAP)).children(row).into_any_element());
         }
 
@@ -1932,6 +2323,62 @@ fn ago(t: Instant) -> String {
     match t.elapsed().as_secs() {
         0..=9 => "just now".into(),
         s @ 10..=59 => format!("{s} s ago"),
-        s => format!("{} min ago", s / 60),
+        s @ 60..=3599 => format!("{} min ago", s / 60),
+        s => format!("{} h ago", s / 3600),
     }
+}
+
+/// Orders present values with `dir` and puts missing ones after them, whatever the direction.
+fn missing_last<T: Ord>(a: Option<T>, b: Option<T>, dir: impl Fn(Ordering) -> Ordering) -> Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => dir(a.cmp(&b)),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+/// A filter toggle drawn as a checkbox, so it reads as "show only these" rather than a button.
+fn filter_chip(id: impl Into<gpui::ElementId>, label: &'static str, on: bool) -> Stateful<gpui::Div> {
+    let check = div()
+        .size(px(16.))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(theme::RADIUS_SM))
+        .border_1()
+        .text_xs()
+        .font_weight(FontWeight::BOLD)
+        .when(on, |d| d.bg(theme::accent()).border_color(theme::accent()).text_color(theme::on_accent()).child("✓"))
+        .when(!on, |d| d.border_color(theme::muted()));
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap_2()
+        .min_h(px(theme::MIN_TARGET_H))
+        .px_3()
+        .rounded(px(theme::RADIUS_SM))
+        .border_1()
+        .border_color(if on { theme::accent() } else { theme::border() })
+        .text_sm()
+        .text_color(if on { theme::text() } else { theme::muted() })
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::panel_hover()).text_color(theme::text()))
+        .child(check)
+        .child(label)
+}
+
+/// A fixed-width list cell: a title and an optional small second line (amber when `warn`).
+fn two_lines(w: f32, title: SharedString, sub: String, warn: bool, strong: bool) -> gpui::Div {
+    div()
+        .w(px(w))
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .child(div().w(px(w)).text_sm().when(strong, |d| d.font_weight(FontWeight::SEMIBOLD)).truncate().child(title))
+        .when(!sub.is_empty(), |d| {
+            d.child(div().w(px(w)).text_xs().text_color(if warn { theme::error() } else { theme::muted() }).truncate().child(sub))
+        })
 }

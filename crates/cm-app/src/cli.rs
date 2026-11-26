@@ -25,8 +25,12 @@ fn steam_id() -> anyhow::Result<String> {
 
 fn online_list(count: usize) -> anyhow::Result<()> {
     let started = std::time::Instant::now();
-    let mut servers = online::fetch_lobby(&steam_id()?)?;
+    let list = online::fetch_lobby(&steam_id()?)?;
     let fetched = started.elapsed();
+    if let Some(e) = &list.cache_error {
+        eprintln!("warning: couldn't cache the server list: {e:#}");
+    }
+    let mut servers = list.servers;
     servers.sort_by_key(|s| std::cmp::Reverse(s.clients));
     let pinger = online::Pinger::start(servers.iter().filter_map(|s| s.udp_addr()).collect())?;
     while !pinger.is_done() {
