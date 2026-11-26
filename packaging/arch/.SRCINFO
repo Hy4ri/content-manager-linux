@@ -1,6 +1,6 @@
 pkgbase = cm-rs-bin
 	pkgdesc = Native Content Manager for Assetto Corsa on Linux, written in Rust with GPUI
-	pkgver = 4.0.0
+	pkgver = 4.0.1
 	pkgrel = 1
 	url = https://github.com/Hy4ri/content-manager-linux
 	arch = x86_64
@@ -36,13 +36,13 @@ pkgbase = cm-rs-bin
 	optdepends = steam: launch Assetto Corsa through Proton
 	provides = cm-rs
 	conflicts = cm-rs
-	noextract = cm-rs-v4.0.0-x86_64.AppImage
-	noextract = cm-rs-v4.0.0-LICENSE
+	noextract = cm-rs-v4.0.1-x86_64.AppImage
+	noextract = cm-rs-v4.0.1-LICENSE
 	options = !strip
 	options = !debug
-	source = cm-rs-v4.0.0-x86_64.AppImage::https://github.com/Hy4ri/content-manager-linux/releases/download/v4.0.0/cm-rs-v4.0.0-x86_64.AppImage
-	source = cm-rs-v4.0.0-LICENSE::https://raw.githubusercontent.com/Hy4ri/content-manager-linux/v4.0.0/LICENSE
-	sha256sums = 5b98d8c07c3fcc2a558a501665cac8f9b1855b0acacb8ee21e17de1209ba95c5
+	source = cm-rs-v4.0.1-x86_64.AppImage::https://github.com/Hy4ri/content-manager-linux/releases/download/v4.0.1/cm-rs-v4.0.1-x86_64.AppImage
+	source = cm-rs-v4.0.1-LICENSE::https://raw.githubusercontent.com/Hy4ri/content-manager-linux/v4.0.1/LICENSE
+	sha256sums = b2a6bf0b519ce9ab810bd0bc6b35d059c3b3379a508349123cf9d446e66dbd98
 	sha256sums = 7f584c6a48654b1496df4c5133e9c9e30759134d549f1c9e3df03f2b05e34fa1
 
 pkgname = cm-rs-bin
