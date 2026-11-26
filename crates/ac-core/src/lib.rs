@@ -23,6 +23,7 @@ pub mod online;
 pub mod paths;
 pub mod race;
 pub mod settings;
+pub mod update;
 
 /// Steam app id of Assetto Corsa.
 pub const AC_APP_ID: u32 = 244210;

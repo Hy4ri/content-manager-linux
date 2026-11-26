@@ -660,27 +660,26 @@ pub fn open_folder(dir: &Path) -> Result<()> {
     if !dir.is_dir() {
         bail!("folder does not exist: {}", dir.display());
     }
+    os_open(dir.as_os_str()).with_context(|| format!("opening folder {}", dir.display()))
+}
+
+/// Opens an `https://` URL in the default browser.
+pub fn open_url(url: &str) -> Result<()> {
+    if !url.starts_with("https://") {
+        bail!("refusing to open non-https URL {url}");
+    }
+    os_open(url.as_ref()).with_context(|| format!("opening {url}"))
+}
+
+/// Hands a path or URL to the desktop's default handler.
+fn os_open(target: &std::ffi::OsStr) -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
-    let mut cmd = {
-        let mut c = Command::new("xdg-open");
-        c.arg(dir);
-        c
-    };
+    let mut cmd = Command::new("xdg-open");
     #[cfg(target_os = "macos")]
-    let mut cmd = {
-        let mut c = Command::new("open");
-        c.arg(dir);
-        c
-    };
+    let mut cmd = Command::new("open");
     #[cfg(target_os = "windows")]
-    let mut cmd = {
-        let mut c = Command::new("explorer");
-        c.arg(dir);
-        c
-    };
-    cmd.spawn()
-        .with_context(|| format!("opening folder {}", dir.display()))?;
-    Ok(())
+    let mut cmd = Command::new("explorer");
+    cmd.arg(target).spawn().map(drop)
 }
 
 /// Formats byte sizes concisely for display (e.g. `128 MB`, `1.4 GB`).

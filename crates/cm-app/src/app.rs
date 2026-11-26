@@ -9,7 +9,7 @@ use ac_core::content::{self, Car, TrackEntry, Weather};
 use ac_core::game_cfg::{self, GameConfig, Kind, Setting, Tab};
 use ac_core::race::{self, Conditions, Mode, QuickDrive};
 use ac_core::settings::{PickerView, Settings};
-use ac_core::{acd, install, launch, paths};
+use ac_core::{acd, install, launch, mods, paths, update};
 use gpui::{
     BoxShadow, ClickEvent, Context, Div, Entity, FocusHandle, FontWeight, KeyDownEvent,
     ModifiersChangedEvent, MouseButton, MouseMoveEvent, ObjectFit, PathPromptOptions,
@@ -293,6 +293,8 @@ const APP_ICON_PNG: &[u8] = include_bytes!("../../../packaging/icons/cm-rs-64.pn
 
 pub struct CmApp {
     app_icon: Arc<gpui::Image>,
+    /// A newer GitHub release found at launch; `None` until found or after dismissing.
+    new_release: Option<update::Release>,
     settings: Settings,
     ac_root: Option<PathBuf>,
     content: Arc<Content>,
@@ -532,6 +534,7 @@ impl CmApp {
                 gpui::ImageFormat::Png,
                 APP_ICON_PNG.to_vec(),
             )),
+            new_release: None,
             page: if ac_root.is_some() {
                 Page::QuickDrive
             } else {
@@ -622,7 +625,78 @@ impl CmApp {
             this.reload(cx);
         }
         this.refresh_download_usage(cx);
+        this.check_for_update(cx);
         this
+    }
+
+    /// Asks GitHub once per launch; failures (offline, rate limit) only go to the log.
+    fn check_for_update(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async { update::check(env!("CARGO_PKG_VERSION")) })
+                .await;
+            match result {
+                Ok(Some(release)) => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.new_release = Some(release);
+                        cx.notify();
+                    });
+                }
+                Ok(None) => {}
+                Err(e) => eprintln!("update check failed: {e:#}"),
+            }
+        })
+        .detach();
+    }
+
+    /// Top-right pill linking to the release page, with a dismiss button.
+    fn update_pill(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let release = self.new_release.as_ref()?;
+        let url = release.url.clone();
+        Some(
+            div()
+                .ml_auto()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .rounded(px(theme::RADIUS_SM))
+                .bg(theme::accent())
+                .text_color(theme::on_accent())
+                .text_sm()
+                .child(
+                    div()
+                        .id("update-open")
+                        .px_3()
+                        .py_1p5()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::accent_hover()))
+                        .rounded_l(px(theme::RADIUS_SM))
+                        .font_weight(FontWeight::BOLD)
+                        .child(format!("Update {} available", release.tag))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Err(e) = mods::open_url(&url) {
+                                this.set_status(format!("{e:#}"), true, cx);
+                            }
+                        })),
+                )
+                .child(
+                    div()
+                        .id("update-dismiss")
+                        .px_2()
+                        .py_1p5()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::accent_hover()))
+                        .rounded_r(px(theme::RADIUS_SM))
+                        .border_l_1()
+                        .border_color(rgba(0x11111133))
+                        .child("✕")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.new_release = None;
+                            cx.notify();
+                        })),
+                ),
+        )
     }
 
     // ---------- state ----------
@@ -2168,7 +2242,8 @@ impl CmApp {
                 )
                 .child(glyph(NavAction::TabPrev))
                 .child(tabs)
-                .child(glyph(NavAction::TabNext)),
+                .child(glyph(NavAction::TabNext))
+                .children(self.update_pill(cx)),
         );
         let pages = TABS[here].1;
         if pages.len() > 1 {
