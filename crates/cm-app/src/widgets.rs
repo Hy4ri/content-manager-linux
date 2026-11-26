@@ -6,8 +6,9 @@ use std::sync::Arc;
 use ac_core::ai_line::RacingLine;
 
 use gpui::{
-    AnyElement, Bounds, BoxShadow, Div, ElementId, FontWeight, ObjectFit, PathBuilder, SharedString, Stateful,
-    canvas, div, fill, img, point, prelude::*, px, size, transparent_black,
+    AnyElement, Bounds, BoxShadow, Div, ElementId, FontWeight, Hsla, ObjectFit, PathBuilder, ScrollHandle,
+    SharedString, Stateful, canvas, div, fill, img, linear_color_stop, linear_gradient, point, prelude::*, px,
+    size, transparent_black,
 };
 
 use crate::theme;
@@ -230,4 +231,93 @@ pub fn hint_bar(hints: Vec<Div>, primary: Option<AnyElement>) -> Div {
     }
 
     bar
+}
+
+/// Width of the fade + chevron that marks a scrollable edge of `h_scroller`.
+const SCROLL_EDGE_W: f32 = 40.;
+
+/// Wraps a horizontally scrolling row so each edge with hidden content fades out and
+/// shows a clickable chevron that pages the row one view-width in that direction.
+///
+/// `bg` is the color behind the row so the fade blends into it.
+pub fn h_scroller(
+    id: &'static str,
+    handle: &ScrollHandle,
+    bg: impl Into<Hsla>,
+    strip: Stateful<Div>,
+) -> Div {
+    let bg: Hsla = bg.into();
+    let edges = |h: &ScrollHandle| {
+        let x = -f32::from(h.offset().x);
+        let max = f32::from(h.max_offset().width);
+        (x > 1., x < max - 1.)
+    };
+    let shown = edges(handle);
+    let (left, right) = shown;
+    let check = handle.clone();
+    let edge = |angle: f32, at_left: bool| {
+        let h = handle.clone();
+        div()
+            .id((id, at_left as usize))
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .when(at_left, |d| d.left_0())
+            .when(!at_left, |d| d.right_0())
+            .w(px(SCROLL_EDGE_W))
+            .flex()
+            .items_center()
+            .when(at_left, |d| d.justify_start())
+            .when(!at_left, |d| d.justify_end())
+            .bg(linear_gradient(
+                angle,
+                linear_color_stop(bg, 0.35),
+                linear_color_stop(bg.opacity(0.), 1.),
+            ))
+            .cursor_pointer()
+            .block_mouse_except_scroll()
+            .on_click(move |_, window, _| {
+                let view = f32::from(h.bounds().size.width);
+                let max = f32::from(h.max_offset().width);
+                let step = (view - 2. * SCROLL_EDGE_W).max(view * 0.5);
+                let x = -f32::from(h.offset().x) + if at_left { -step } else { step };
+                h.set_offset(point(px(-x.clamp(0., max)), h.offset().y));
+                window.refresh();
+            })
+            .child(
+                div()
+                    .size(px(26.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(theme::RADIUS_SM))
+                    .bg(theme::overlay())
+                    .border_1()
+                    .border_color(theme::border())
+                    .text_sm()
+                    .font_weight(FontWeight::BOLD)
+                    .child(if at_left { "‹" } else { "›" }),
+            )
+    };
+    div()
+        .relative()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .child(strip.overflow_x_scroll().track_scroll(handle))
+        .child(
+            // The strip updates its scroll bounds during prepaint, after render read them.
+            canvas(
+                move |_, window, _| {
+                    if edges(&check) != shown {
+                        window.request_animation_frame();
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_0(),
+        )
+        .when(left, |d| d.child(edge(90., true)))
+        .when(right, |d| d.child(edge(270., false)))
 }

@@ -16,7 +16,7 @@ use gpui::{
 use crate::{
     text_input::TextInput,
     theme,
-    widgets::{button, chip, field, focus_ring, panel, picture, primary_button, section_title},
+    widgets::{button, chip, field, focus_ring, h_scroller, panel, picture, primary_button, section_title},
 };
 
 pub struct Running(pub bool);
@@ -98,6 +98,7 @@ pub struct EventsView {
     restart_confirm: bool,
     show_config: bool,
     scroll: UniformListScrollHandle,
+    jumper_scroll: gpui::ScrollHandle,
     loading: bool,
     pub running: bool,
     error: Option<String>,
@@ -260,6 +261,7 @@ impl EventsView {
             restart_confirm: false,
             show_config: false,
             scroll: UniformListScrollHandle::new(),
+            jumper_scroll: gpui::ScrollHandle::new(),
             loading: false,
             running: false,
             error: None,
@@ -1583,12 +1585,7 @@ impl EventsView {
             .items_center()
             .gap_2()
             .px_6()
-            .py_2()
-            .flex_shrink_0()
-            .overflow_x_scroll()
-            .border_b_1()
-            .border_color(theme::border())
-            .bg(theme::surface());
+            .py_2();
         for (i, ev) in series.events.iter().enumerate() {
             let unlocked = series.event_unlocked(i, &self.catalog, &self.progress);
             let active = i == self.selected;
@@ -2157,7 +2154,13 @@ impl EventsView {
                             ),
                     ),
             )
-            .child(jumper)
+            .child(
+                h_scroller("career-jumper-edge", &self.jumper_scroll, theme::surface(), jumper)
+                    .flex_shrink_0()
+                    .border_b_1()
+                    .border_color(theme::border())
+                    .bg(theme::surface()),
+            )
             .child(self.render_banners(main_w))
             .child(
                 div()

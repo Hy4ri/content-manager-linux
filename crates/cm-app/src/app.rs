@@ -31,8 +31,8 @@ use crate::nav::NavAction;
 use crate::text_input::TextInput;
 use crate::theme;
 use crate::widgets::{
-    button, chip, field, focus_ring, hint, hint_bar, panel, picture, primary_button, section_title, segmented,
-    track_map,
+    button, chip, field, focus_ring, h_scroller, hint, hint_bar, panel, picture, primary_button, section_title,
+    segmented, track_map,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -4570,8 +4570,6 @@ impl CmApp {
                 .id("skin-strip")
                 .flex()
                 .gap_2()
-                .overflow_x_scroll()
-                .track_scroll(&self.skin_strip)
                 .children(car.skins.iter().enumerate().map(|(i, s)| {
                     Self::strip_thumb(("skin", i), s.preview.clone(), s.name.clone(), i == self.skin).on_click(
                         cx.listener(move |this, _, _, cx| {
@@ -4580,7 +4578,7 @@ impl CmApp {
                         }),
                     )
                 }));
-            (title, div().child(items))
+            (title, h_scroller("skin-strip-edge", &self.skin_strip, theme::surface(), items))
         });
         let media = Self::detail_media(geo, picture(preview, geo.preview_h), strip);
 
@@ -4665,8 +4663,6 @@ impl CmApp {
                 .id("layout-strip")
                 .flex()
                 .gap_2()
-                .overflow_x_scroll()
-                .track_scroll(&self.layout_strip)
                 .children(siblings.iter().enumerate().map(|(pos, &ix)| {
                     let e = &self.content.tracks[ix];
                     let label = layout_short_name(&prefix, &e.layout.name);
@@ -4677,7 +4673,7 @@ impl CmApp {
                         }),
                     )
                 }));
-            (title, div().child(items))
+            (title, h_scroller("layout-strip-edge", &self.layout_strip, theme::surface(), items))
         });
         // Kunos track previews are ~355x200, so the vector racing line is the hero and the
         // photo sits in the info card near its native size.

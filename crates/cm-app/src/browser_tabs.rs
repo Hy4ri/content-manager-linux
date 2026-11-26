@@ -4,10 +4,13 @@ use std::time::Duration;
 
 use ac_core::bookmarks::Bookmark;
 use ac_core::browser_session::BrowserSession;
-use gpui::{Context, Entity, EventEmitter, Render, Task, Window, div, prelude::*, px};
+use gpui::{Context, Entity, EventEmitter, Render, ScrollHandle, Task, Window, div, prelude::*, px};
 
 use crate::browser_view::{BrowserView, DEFAULT_BROWSER_URL, PreviewDownload};
-use crate::{theme, widgets::button};
+use crate::{
+    theme,
+    widgets::{button, h_scroller},
+};
 
 struct Tab {
     id: usize,
@@ -21,6 +24,7 @@ pub struct BrowserTabs {
     active: bool,
     saved: BrowserSession,
     session_error: Option<String>,
+    strip: ScrollHandle,
     _refresh: Task<()>,
 }
 
@@ -55,6 +59,7 @@ impl BrowserTabs {
             active: true,
             saved: saved.clone(),
             session_error,
+            strip: ScrollHandle::new(),
             _refresh: refresh,
         };
         for tab in &saved.tabs {
@@ -233,14 +238,17 @@ impl Render for BrowserTabs {
                     .flex_shrink_0()
                     .bg(theme::panel())
                     .child(
-                        div()
-                            .id("browser-tabs")
-                            .flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_2()
-                            .overflow_x_scroll()
-                            .children(tabs),
+                        h_scroller(
+                            "browser-tabs-edge",
+                            &self.strip,
+                            theme::panel(),
+                            div()
+                                .id("browser-tabs")
+                                .flex()
+                                .gap_2()
+                                .children(tabs),
+                        )
+                        .flex_1(),
                     )
                     .child(button("browser-new-tab", "+").on_click(cx.listener(
                         |this, _, window, cx| this.add_tab(DEFAULT_BROWSER_URL, window, cx),
