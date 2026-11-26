@@ -58,11 +58,6 @@ pub fn track_map(line: Option<Arc<RacingLine>>, outline: Option<PathBuf>, side: 
     }).size_full())
 }
 
-/// Label column + control, so every setting lines up on the same grid.
-pub fn setting_row(label: impl Into<SharedString>, control: impl IntoElement) -> Div {
-    div().flex().items_center().gap_2().min_h(px(28.)).child(div().w(px(120.)).flex_shrink_0().text_sm().text_color(theme::muted()).child(label.into())).child(control)
-}
-
 /// Two or more mutually exclusive chips drawn as one control.
 pub fn segmented(items: Vec<Stateful<Div>>) -> Div {
     div()

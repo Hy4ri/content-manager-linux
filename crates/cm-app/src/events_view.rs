@@ -10,7 +10,7 @@ use ac_core::{
 };
 use gpui::{
     AnyElement, Context, Div, Entity, EventEmitter, FontWeight, ObjectFit, Render, ScrollStrategy,
-    UniformListScrollHandle, Window, div, img, prelude::*, px, rgb, uniform_list,
+    UniformListScrollHandle, Window, div, img, prelude::*, px, uniform_list,
 };
 
 use crate::{
@@ -135,9 +135,9 @@ fn medal_short(n: u8) -> &'static str {
 
 fn medal_color(n: u8) -> gpui::Rgba {
     match n {
-        1 => rgb(0xcd9360),
-        2 => rgb(0xc6cbd4),
-        3 => rgb(0xe7bc53),
+        1 => theme::medal_bronze(),
+        2 => theme::medal_silver(),
+        3 => theme::medal_gold(),
         _ => theme::muted(),
     }
 }
@@ -1574,7 +1574,7 @@ impl EventsView {
                     }));
 
                 let card = if ev_unlocked {
-                    focus_ring(base, i == self.selected)
+                    focus_ring(base, self.input_device.shows_focus() && i == self.selected)
                 } else {
                     base
                 };
@@ -1650,7 +1650,7 @@ impl EventsView {
                 .flex()
                 .items_center()
                 .flex_shrink_0()
-                .min_h(px(34.))
+                .min_h(px(theme::MIN_TARGET_H))
                 .px_3()
                 .py_1()
                 .rounded(px(theme::RADIUS_SM))

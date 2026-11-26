@@ -45,6 +45,9 @@ pub fn accent_hover() -> Rgba {
 pub fn on_accent() -> Rgba {
     rgb(0x111111)
 }
+pub fn on_accent_divider() -> Rgba {
+    rgba(0x11111133)
+}
 
 // Focus token (accent with alpha ~0.35)
 pub fn focus_glow() -> Rgba {
@@ -58,6 +61,25 @@ pub fn ok() -> Rgba {
 pub fn error() -> Rgba {
     // Amber, deliberately NOT red so errors never look like the accent
     rgb(0xffa23d)
+}
+
+// Medal tones (Career / Special Events)
+pub fn medal_bronze() -> Rgba {
+    rgb(0xcd9360)
+}
+pub fn medal_silver() -> Rgba {
+    rgb(0xc6cbd4)
+}
+pub fn medal_gold() -> Rgba {
+    rgb(0xe7bc53)
+}
+
+// Translucent overlays and drop shadows
+pub fn scrim() -> Rgba {
+    rgba(0x0f1012cc)
+}
+pub fn shadow() -> Rgba {
+    rgba(0x00000099)
 }
 
 // Input background

@@ -1575,7 +1575,7 @@ impl OnlineView {
                 .justify_center()
                 .text_lg()
                 .cursor_pointer()
-                .text_color(if favourite { theme::accent() } else { theme::faint() })
+                .text_color(if favourite { theme::accent() } else { theme::muted() })
                 .hover(|s| s.text_color(theme::accent()))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     // The row behind opens the server; the star only toggles.
@@ -1702,9 +1702,9 @@ impl OnlineView {
     fn header_row(&self, cols: &Cols, cx: &mut Context<Self>) -> gpui::Div {
         let sort = self.sort();
         let label = |text: &'static str, w: f32, right: bool| {
-            div().w(px(w)).flex_shrink_0().flex().when(right, |d| d.justify_end()).text_xs().text_color(theme::faint()).child(text.to_uppercase())
+            div().w(px(w)).flex_shrink_0().flex().when(right, |d| d.justify_end()).text_xs().text_color(theme::muted()).child(text.to_uppercase())
         };
-        let mut row = div().h(px(36.)).px_3().flex().items_center().gap(px(GAP)).border_b_1().border_color(theme::border());
+        let mut row = div().min_h(px(theme::MIN_TARGET_H)).px_3().flex().items_center().gap(px(GAP)).border_b_1().border_color(theme::border());
         row = row.child(div().w(px(cols.star)).flex_shrink_0());
         for (i, key) in Sort::ALL.into_iter().enumerate() {
             let active = sort.filter(|(k, _)| *k == key);
@@ -1746,7 +1746,7 @@ impl OnlineView {
         let mut filters = div().flex().flex_wrap().items_center().gap_2();
         let mut actions = div().flex().items_center().gap_2().ml_auto();
         if items.iter().any(|i| matches!(i, BarItem::Filter(_))) {
-            filters = filters.child(div().mr_1().text_xs().text_color(theme::faint()).child("SHOW ONLY"));
+            filters = filters.child(div().mr_1().text_xs().text_color(theme::muted()).child("SHOW ONLY"));
         }
         for (i, item) in items.iter().enumerate() {
             let el: Stateful<gpui::Div> = match *item {
@@ -2193,7 +2193,7 @@ impl OnlineView {
             );
             if view == CarView::Details && !cars.is_empty() {
                 // Column titles, aligned with the rows' picture, name and stat cells.
-                let mut head = div().flex().items_center().gap(px(GAP)).px(px(10.)).text_xs().text_color(theme::faint());
+                let mut head = div().flex().items_center().gap(px(GAP)).px(px(10.)).text_xs().text_color(theme::muted());
                 head = head.child(div().w(px(100.)).flex_shrink_0()).child(div().flex_1().child("CAR"));
                 for (_, label) in CAR_STATS {
                     head = head.child(div().w(px(STAT_W)).flex_shrink_0().text_right().child(label.to_uppercase()));
