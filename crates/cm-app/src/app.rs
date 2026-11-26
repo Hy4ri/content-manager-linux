@@ -223,6 +223,100 @@ fn drive_geometry(viewport_w: f32, viewport_h: f32) -> (f32, f32) {
     (car_h, track_h)
 }
 
+/// Garage / Tracks detail pages: header card plus a media card (preview over a variant strip)
+/// paired with an info card of the same height.
+const DETAIL_HEADER_H: f32 = 72.;
+const DETAIL_SIDE_MIN_W: f32 = 380.;
+const DETAIL_SIDE_MAX_W: f32 = 640.;
+/// Below this content width the info card drops under the media card.
+const DETAIL_TWO_COL_MIN_W: f32 = 900.;
+const STRIP_THUMB_W: f32 = 128.;
+/// Cap for the track photo in the info card; the source previews are only ~200 px tall.
+const TRACK_PHOTO_MAX_H: f32 = 240.;
+const STRIP_LABEL_H: f32 = 22.;
+/// Strip title row, gaps and one thumbnail row (picture, label, borders).
+const STRIP_H: f32 = 20. + 8. + 8. + STRIP_THUMB_W * 9. / 16. + STRIP_LABEL_H + 2.;
+/// Media card padding (`p_3`) plus its 1 px border.
+const CARD_CHROME: f32 = 24. + 2.;
+
+#[derive(Clone, Copy)]
+struct DetailGeometry {
+    two_col: bool,
+    preview_h: f32,
+    row_h: f32,
+    side_w: f32,
+}
+
+/// Sizes the detail row so the preview fills the page height without scrolling at 1360x768 and up.
+fn detail_geometry(viewport_w: f32, viewport_h: f32, has_strip: bool) -> DetailGeometry {
+    let main_w = viewport_w - SIDEBAR_W - 2. * 16.;
+    let two_col = main_w >= DETAIL_TWO_COL_MIN_W;
+    let strip = if has_strip { STRIP_H } else { 0. };
+    let row_h = (viewport_h - CHROME_H - 2. * 16. - DETAIL_HEADER_H - 12.).max(320.);
+    if !two_col {
+        let preview_h = ((main_w - CARD_CHROME) * 9. / 16.).clamp(180., 420.);
+        return DetailGeometry { two_col, preview_h, row_h: preview_h + CARD_CHROME + strip, side_w: main_w };
+    }
+    // The media card hugs a 16:9 preview that fills the page height; the info card takes
+    // the leftover width, so neither card shows letterbox bands or dead columns.
+    let by_height = row_h - CARD_CHROME - strip;
+    let by_width = (main_w - 12. - DETAIL_SIDE_MIN_W - CARD_CHROME) * 9. / 16.;
+    let preview_h = by_height.min(by_width).max(180.);
+    let side_w = (main_w - 12. - (preview_h * 16. / 9. + CARD_CHROME)).clamp(DETAIL_SIDE_MIN_W, DETAIL_SIDE_MAX_W);
+    DetailGeometry {
+        two_col,
+        preview_h,
+        row_h: preview_h + CARD_CHROME + strip,
+        side_w,
+    }
+}
+
+/// Common "Track - " head of sibling layout names, cut at the last separator so words stay whole.
+fn shared_name_prefix(names: &[&str]) -> String {
+    let Some(first) = names.first() else { return String::new() };
+    let mut n = first.len();
+    for name in &names[1..] {
+        n = n.min(first.bytes().zip(name.bytes()).take_while(|(a, b)| a == b).count());
+    }
+    while !first.is_char_boundary(n) {
+        n -= 1;
+    }
+    let head = &first[..n];
+    head.rfind(" - ").map(|i| head[..i + 3].to_owned()).unwrap_or_default()
+}
+
+fn layout_short_name(prefix: &str, name: &str) -> String {
+    let short = name.strip_prefix(prefix).unwrap_or(name).trim();
+    if short.is_empty() { name.to_owned() } else { short.to_owned() }
+}
+
+/// One spec in a two-column tile grid: small label over a large value.
+fn stat_tile(label: String, value: String) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .px_3()
+        .py_2()
+        .rounded(px(theme::RADIUS_SM))
+        .bg(theme::bg())
+        .child(div().text_xs().text_color(theme::faint()).child(label.to_uppercase()))
+        .child(div().text_lg().font_weight(FontWeight::BOLD).truncate().child(value))
+}
+
+fn tag_list(tags: &[String]) -> Div {
+    div().flex().flex_wrap().gap_1().children(tags.iter().map(|t| {
+        div()
+            .px_2()
+            .py_0p5()
+            .rounded(px(theme::RADIUS_SM))
+            .bg(theme::raised())
+            .text_xs()
+            .text_color(theme::muted())
+            .child(t.clone())
+    }))
+}
+
 /// Next list index after moving `delta` rows, clamped; starts at the top with no selection.
 fn step_index(pos: Option<usize>, delta: isize, len: usize) -> usize {
     match pos {
@@ -324,6 +418,8 @@ pub struct CmApp {
     picker_focus: usize,
     picker_scroll: UniformListScrollHandle,
     picker_viewport_w: f32,
+    skin_strip: gpui::ScrollHandle,
+    layout_strip: gpui::ScrollHandle,
     /// Last device that produced input; decides hint glyphs and focus-ring visibility.
     input_device: crate::nav::InputDevice,
     car_brand: Option<String>,
@@ -567,6 +663,8 @@ impl CmApp {
             picker_focus: 0,
             picker_scroll: UniformListScrollHandle::new(),
             picker_viewport_w: 1360.,
+            skin_strip: gpui::ScrollHandle::new(),
+            layout_strip: gpui::ScrollHandle::new(),
             input_device: crate::nav::InputDevice::default(),
             car_brand: None,
             brand_menu_focus: None,
@@ -2057,6 +2155,28 @@ impl CmApp {
         }
     }
 
+    /// Cycles the selected car's skin and keeps it visible in the Garage skin strip.
+    fn step_skin(&mut self, delta: isize) {
+        let n = self.selected_car().map(|c| c.skins.len()).unwrap_or(0);
+        if n == 0 {
+            return;
+        }
+        self.skin = (self.skin as isize + delta).rem_euclid(n as isize) as usize;
+        self.skin_strip.scroll_to_item(self.skin);
+    }
+
+    /// Cycles through the selected track's layouts on the Tracks page.
+    fn step_layout(&mut self, delta: isize) {
+        let siblings = self.sibling_layouts();
+        if siblings.len() < 2 {
+            return;
+        }
+        let at = siblings.iter().position(|&i| Some(i) == self.track).unwrap_or(0) as isize;
+        let next = (at + delta).rem_euclid(siblings.len() as isize) as usize;
+        self.track = Some(siblings[next]);
+        self.layout_strip.scroll_to_item(next);
+    }
+
     /// One controller press aimed at the launcher UI. Ignored while a bind is
     /// being captured, the game runs, or the window is in the background.
     fn pad_press(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -2142,12 +2262,9 @@ impl CmApp {
             "A" if self.page == Page::Cars => self.open_picker(PickerKind::Car, window),
             "A" if self.page == Page::Tracks => self.open_picker(PickerKind::Track, window),
             "B" if self.page != Page::QuickDrive => self.goto_page(Page::QuickDrive, window, cx),
-            "X" => {
-                let n = self.selected_car().map(|c| c.skins.len()).unwrap_or(0);
-                if n > 0 {
-                    self.skin = (self.skin + 1) % n;
-                }
-            }
+            "DPAD_LEFT" | "DPAD_RIGHT" if self.page == Page::Cars => self.step_skin(if name == "DPAD_LEFT" { -1 } else { 1 }),
+            "DPAD_LEFT" | "DPAD_RIGHT" if self.page == Page::Tracks => self.step_layout(if name == "DPAD_LEFT" { -1 } else { 1 }),
+            "X" => self.step_skin(1),
             "START" if matches!(self.page, Page::QuickDrive | Page::Cars | Page::Tracks) => self.start_game(cx),
             _ => {}
         }
@@ -2270,6 +2387,12 @@ impl CmApp {
                 hints.push(h(NavAction::Primary, "Go!"));
             }
             Page::Cars | Page::Tracks => {
+                if self.page == Page::Cars && self.selected_car().is_some_and(|c| c.skins.len() > 1) {
+                    hints.push(h(NavAction::Left, "Skin"));
+                }
+                if self.page == Page::Tracks && self.sibling_layouts().len() > 1 {
+                    hints.push(h(NavAction::Left, "Layout"));
+                }
                 hints.push(h(NavAction::Confirm, "Change"));
                 hints.push(h(NavAction::Back, "Drive"));
                 hints.push(h(NavAction::Primary, "Go!"));
@@ -3097,6 +3220,8 @@ impl CmApp {
             && !self.sort_menu_open
             && !self.view_menu_open
             && self.picker_focus == pos;
+        // Tracks overlay their map and layout count: sibling layouts often share one preview image.
+        let mut overlay: Option<(Option<Arc<ac_core::ai_line::RacingLine>>, Option<PathBuf>, usize)> = None;
         let (ix, title, sub, image, current) = match kind {
             PickerKind::Car => {
                 let ix = self.cars_view[pos];
@@ -3113,9 +3238,45 @@ impl CmApp {
                     .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>()
                     .join(" · ");
+                let layouts = self.content.tracks.iter().filter(|e| e.track_id == t.track_id).count();
+                overlay = Some((t.layout.racing_line.clone(), t.layout.outline.clone(), layouts));
                 (ix, t.layout.name.clone(), sub, t.layout.preview.clone().or_else(|| t.layout.outline.clone()), self.track == Some(ix))
             }
         };
+        let map_side = (layout.img_h * 0.42).clamp(48., 88.);
+        let media = div()
+            .relative()
+            .w_full()
+            .child(picture(image, layout.img_h).w_full())
+            .when_some(overlay, |d, (line, outline, layouts)| {
+                d.when(line.is_some() || outline.is_some(), |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .right(px(6.))
+                            .bottom(px(6.))
+                            .p_1()
+                            .rounded(px(theme::RADIUS_SM))
+                            .bg(rgba(0x0f1012cc))
+                            .child(track_map(line, outline, map_side)),
+                    )
+                })
+                .when(layouts > 1, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .left(px(6.))
+                            .top(px(6.))
+                            .px_2()
+                            .py_0p5()
+                            .rounded(px(theme::RADIUS_SM))
+                            .bg(rgba(0x0f1012cc))
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .child(format!("{layouts} layouts")),
+                    )
+                })
+            });
         focus_ring(
             div()
                 .id(("pcard", pos))
@@ -3133,7 +3294,7 @@ impl CmApp {
             focused,
         )
         .on_click(cx.listener(move |this, _, _, cx| this.pick(kind, ix, cx)))
-        .child(picture(image, layout.img_h).w_full())
+        .child(media)
         .child(two_lines(title, sub, Some((w - 28.).max(80.))))
     }
 
@@ -3931,274 +4092,311 @@ impl CmApp {
             .into_any_element()
     }
 
-    fn cars_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let detail =
-            match self.selected_car() {
-                None => div()
-                    .p_4()
-                    .text_color(theme::muted())
-                    .child("No car selected"),
-                Some(car) => {
-                    let dir = car.dir.clone();
-                    let header = div()
+    /// One unified header card for a detail page: optional badge, title, subtitle, actions on the right.
+    fn detail_header(badge: Option<PathBuf>, title: String, sub: String, actions: Div) -> Div {
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap_3()
+            .h(px(DETAIL_HEADER_H))
+            .px_4()
+            .rounded(px(theme::RADIUS_MD))
+            .bg(theme::surface())
+            .border_1()
+            .border_color(theme::border())
+            .when_some(badge, |d, b| {
+                d.child(img(b).size(px(40.)).flex_shrink_0().object_fit(ObjectFit::Contain))
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().text_xl().font_weight(FontWeight::BOLD).truncate().child(title))
+                    .when(!sub.is_empty(), |d| {
+                        d.child(div().text_sm().text_color(theme::muted()).truncate().child(sub))
+                    }),
+            )
+            .child(actions.flex().flex_shrink_0().items_center().gap_2())
+    }
+
+    /// Big preview over a horizontal strip of variants (car skins, track layouts), in one card.
+    fn detail_media(geo: DetailGeometry, hero: Div, strip: Option<(String, Div)>) -> Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .min_w_0()
+            .when(geo.two_col, |d| d.flex_1())
+            .rounded(px(theme::RADIUS_MD))
+            .bg(theme::surface())
+            .border_1()
+            .border_color(theme::border())
+            .child(hero.h(px(geo.preview_h)).w_full())
+            .when_some(strip, |d, (title, items)| {
+                d.child(
+                    div()
+                        .h(px(20.))
                         .flex()
                         .items_center()
-                        .gap_3()
-                        .when_some(car.badge.clone(), |d, b| {
-                            d.child(
-                                img(b)
-                                    .size(px(40.))
-                                    .flex_shrink_0()
-                                    .object_fit(ObjectFit::Contain),
-                            )
-                        })
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .flex_1()
-                                .min_w_0()
-                                .child(
-                                    div()
-                                        .text_xl()
-                                        .font_weight(FontWeight::BOLD)
-                                        .truncate()
-                                        .child(car.name.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(theme::muted())
-                                        .truncate()
-                                        .child(car.id.clone()),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_shrink_0()
-                                .items_center()
-                                .gap_2()
-                                .child(button("garage-change", "Change car").on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.open_picker(PickerKind::Car, window);
-                                        cx.notify();
-                                    }),
-                                ))
-                                .child(button("open-folder", "Open folder").on_click(
-                                    cx.listener(move |_, _, _, cx| cx.open_with_system(&dir)),
-                                ))
-                                .when(car.has_data_acd && !car.has_data_dir, |d| {
-                                    d.child(
-                                        button("unpack", "Unpack data.acd")
-                                            .on_click(cx.listener(Self::unpack_acd)),
-                                    )
-                                })
-                                .when(car.has_data_dir, |d| {
-                                    d.child(
-                                        button("pack", "Pack data.acd")
-                                            .on_click(cx.listener(Self::pack_acd)),
-                                    )
-                                })
-                                .child(
-                                    primary_button("drive-car", "Drive")
-                                        .on_click(cx.listener(Self::open_quick_drive)),
-                                ),
-                        );
+                        .text_xs()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme::muted())
+                        .child(title),
+                )
+                .child(items)
+            })
+    }
 
-                    let preview = car
-                        .skins
-                        .get(self.skin)
-                        .and_then(|s| s.preview.clone())
-                        .or(car.preview().map(|p| p.to_path_buf()));
-                    let skins = div().flex().flex_wrap().gap_2().children(
-                        car.skins.iter().enumerate().map(|(i, s)| {
-                            let selected = i == self.skin;
-                            div()
-                                .id(("skin", i))
-                                .w(px(112.))
-                                .flex()
-                                .flex_col()
-                                .rounded_sm()
-                                .overflow_hidden()
-                                .border_1()
-                                .border_color(if selected {
-                                    theme::accent()
-                                } else {
-                                    theme::border()
-                                })
-                                .cursor_pointer()
-                                .hover(|d| d.bg(theme::panel_hover()))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.skin = i;
-                                    cx.notify();
-                                }))
-                                .child(picture(s.preview.clone(), 63.).w_full())
-                                .child(div().px_1().text_xs().truncate().child(s.name.clone()))
+    /// Right-hand info card; scrolls on its own so the row keeps the media card's height.
+    fn detail_side(id: &'static str, geo: DetailGeometry) -> gpui::Stateful<Div> {
+        div()
+            .id(id)
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_3()
+            .rounded(px(theme::RADIUS_MD))
+            .bg(theme::surface())
+            .border_1()
+            .border_color(theme::border())
+            .when(geo.two_col, |d| d.w(px(geo.side_w)).flex_shrink_0().overflow_y_scroll())
+    }
+
+    fn detail_row(geo: DetailGeometry, media: Div, side: gpui::Stateful<Div>) -> Div {
+        div()
+            .flex()
+            .gap_3()
+            .when(geo.two_col, |d| d.h(px(geo.row_h)))
+            .when(!geo.two_col, |d| d.flex_col())
+            .child(media)
+            .child(side)
+    }
+
+    /// Thumbnail in a skin/layout strip.
+    fn strip_thumb(
+        id: (&'static str, usize),
+        image: Option<PathBuf>,
+        label: String,
+        selected: bool,
+    ) -> gpui::Stateful<Div> {
+        div()
+            .id(id)
+            .w(px(STRIP_THUMB_W))
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .rounded(px(theme::RADIUS_SM))
+            .overflow_hidden()
+            .border_1()
+            .border_color(if selected { theme::accent() } else { theme::border() })
+            .when(selected, |d| d.bg(theme::overlay()))
+            .cursor_pointer()
+            .hover(|d| d.bg(theme::panel_hover()))
+            .child(picture(image, STRIP_THUMB_W * 9. / 16.).w_full())
+            .child(
+                div()
+                    .px_1p5()
+                    .h(px(STRIP_LABEL_H))
+                    .flex()
+                    .items_center()
+                    .text_xs()
+                    .when(!selected, |d| d.text_color(theme::muted()))
+                    .child(div().w(px(STRIP_THUMB_W - 14.)).truncate().child(label)),
+            )
+    }
+
+    fn cars_page(&self, geo: DetailGeometry, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(car) = self.selected_car() else {
+            return div().p_4().text_color(theme::muted()).child("No car selected").into_any_element();
+        };
+        let dir = car.dir.clone();
+        let actions = div()
+            .child(button("garage-change", "Change car").on_click(cx.listener(|this, _, window, cx| {
+                this.open_picker(PickerKind::Car, window);
+                cx.notify();
+            })))
+            .child(button("open-folder", "Open folder").on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&dir))))
+            .when(car.has_data_acd && !car.has_data_dir, |d| {
+                d.child(button("unpack", "Unpack data.acd").on_click(cx.listener(Self::unpack_acd)))
+            })
+            .when(car.has_data_dir, |d| d.child(button("pack", "Pack data.acd").on_click(cx.listener(Self::pack_acd))))
+            .child(primary_button("drive-car", "Drive").on_click(cx.listener(Self::open_quick_drive)));
+        let sub = [car.brand.clone(), car.class.clone(), car.year.clone()]
+            .into_iter()
+            .flatten()
+            .filter(|s| !s.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let header = Self::detail_header(car.badge.clone(), car.name.clone(), sub, actions);
+
+        let skin = car.skins.get(self.skin);
+        let preview = skin.and_then(|s| s.preview.clone()).or(car.preview().map(|p| p.to_path_buf()));
+        let strip = (!car.skins.is_empty()).then(|| {
+            let title = format!(
+                "SKIN {}/{} · {}",
+                self.skin + 1,
+                car.skins.len(),
+                skin.map(|s| s.name.clone()).unwrap_or_default()
+            );
+            let items = div()
+                .id("skin-strip")
+                .flex()
+                .gap_2()
+                .overflow_x_scroll()
+                .track_scroll(&self.skin_strip)
+                .children(car.skins.iter().enumerate().map(|(i, s)| {
+                    Self::strip_thumb(("skin", i), s.preview.clone(), s.name.clone(), i == self.skin).on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            this.skin = i;
+                            cx.notify();
                         }),
-                    );
+                    )
+                }));
+            (title, div().child(items))
+        });
+        let media = Self::detail_media(geo, picture(preview, geo.preview_h), strip);
 
-                    let mut info = panel().grid().grid_cols(2).gap_x_6().gap_y_1();
-                    for (k, v) in [
-                        ("Brand", &car.brand),
-                        ("Class", &car.class),
-                        ("Year", &car.year),
-                        ("Country", &car.country),
-                        ("Author", &car.author),
-                    ] {
-                        if let Some(v) = v {
-                            info = info.child(field(k, v.clone()));
-                        }
-                    }
-                    for (k, v) in &car.specs {
-                        info = info.child(field(content::spec_label(k).to_owned(), v.clone()));
-                    }
-                    info = info.child(field(
-                        "Data",
-                        match (car.has_data_acd, car.has_data_dir) {
-                            (true, true) => "data.acd + data folder",
-                            (true, false) => "data.acd (packed)",
-                            (false, true) => "data folder (unpacked)",
-                            (false, false) => "missing",
-                        },
-                    ));
+        let mut side = Self::detail_side("car-side", geo);
+        if !car.specs.is_empty() {
+            side = side.child(section_title("Specs")).child(
+                div().grid().grid_cols(if geo.side_w >= 520. { 3 } else { 2 }).gap_2().children(
+                    car.specs.iter().map(|(k, v)| stat_tile(content::spec_label(k).to_owned(), v.clone())),
+                ),
+            );
+        }
+        let mut info = div().flex().flex_col().gap_1();
+        for (k, v) in [("Brand", &car.brand), ("Class", &car.class), ("Year", &car.year), ("Country", &car.country), ("Author", &car.author)] {
+            if let Some(v) = v.as_ref().filter(|v| !v.trim().is_empty()) {
+                info = info.child(field(k, v.clone()));
+            }
+        }
+        info = info.child(field("Folder", car.id.clone())).child(field(
+            "Data",
+            match (car.has_data_acd, car.has_data_dir) {
+                (true, true) => "data.acd + data folder",
+                (true, false) => "data.acd (packed)",
+                (false, true) => "data folder (unpacked)",
+                (false, false) => "missing",
+            },
+        ));
+        side = side
+            .child(section_title("Details"))
+            .child(info)
+            .when(!car.tags.is_empty(), |d| d.child(tag_list(&car.tags)))
+            .when_some(car.description.clone(), |d, desc| {
+                d.child(section_title("About")).child(div().text_sm().text_color(theme::muted()).child(desc))
+            })
+            .when_some(car.ui_error.clone(), |d, err| {
+                d.child(div().text_sm().text_color(theme::error()).child(format!("⚠ ui_car.json: {err}")))
+            });
 
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_3()
-                        .p_4()
-                        .child(header)
-                        .child(picture(preview, 300.).w_full())
-                        .child(section_title(format!("Skins ({})", car.skins.len())))
-                        .child(skins)
-                        .child(section_title("Specs"))
-                        .child(info)
-                        .when(!car.tags.is_empty(), |d| {
-                            d.child(
-                                div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .gap_1()
-                                    .children(car.tags.iter().map(|t| {
-                                        div()
-                                            .px_2()
-                                            .rounded_sm()
-                                            .bg(theme::panel())
-                                            .text_xs()
-                                            .text_color(theme::muted())
-                                            .child(t.clone())
-                                    })),
-                            )
-                        })
-                        .when_some(car.description.clone(), |d, desc| {
-                            d.child(div().text_sm().child(desc))
-                        })
-                        .when_some(car.ui_error.clone(), |d, err| {
-                            d.child(
-                                div()
-                                    .text_sm()
-                                    .text_color(theme::error())
-                                    .child(format!("ui_car.json: {err}")),
-                            )
-                        })
-                }
-            };
         div()
             .id("car-detail")
             .size_full()
             .overflow_y_scroll()
-            .child(detail)
+            .child(div().flex().flex_col().gap_3().p_4().child(header).child(Self::detail_row(geo, media, side)))
+            .into_any_element()
     }
 
-    fn tracks_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let detail =
-            match self.selected_track() {
-                None => div()
-                    .p_4()
-                    .text_color(theme::muted())
-                    .child("No track selected"),
-                Some(t) => {
-                    let l = &t.layout;
-                    let mut info = panel()
-                        .grid()
-                        .grid_cols(2)
-                        .gap_x_6()
-                        .gap_y_1()
-                        .child(field("Folder", t.key()));
-                    for (k, v) in [
-                        ("Country", &l.country),
-                        ("City", &l.city),
-                        ("Length", &l.length.clone().map(|x| format!("{x} m"))),
-                    ] {
-                        if let Some(v) = v {
-                            info = info.child(field(k, v.clone()));
-                        }
-                    }
-                    if let Some(p) = l.pitboxes {
-                        info = info.child(field("Pit boxes", p.to_string()));
-                    }
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_3()
-                        .p_4()
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_3()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .text_xl()
-                                        .font_weight(FontWeight::BOLD)
-                                        .truncate()
-                                        .child(l.name.clone()),
-                                )
-                                .child(button("tracks-change", "Change track").on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.open_picker(PickerKind::Track, window);
-                                        cx.notify();
-                                    }),
-                                ))
-                                .child(
-                                    primary_button("drive-track", "Drive")
-                                        .on_click(cx.listener(Self::open_quick_drive)),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .gap_3()
-                                .child(picture(l.preview.clone(), 240.).flex_1().min_w_0())
-                                .child(track_map(l.racing_line.clone(), l.outline.clone(), 240.)),
-                        )
-                        .child(info)
-                        .when(!l.tags.is_empty(), |d| {
-                            d.child(div().flex().flex_wrap().gap_1().children(l.tags.iter().map(
-                                |t| {
-                                    div()
-                                        .px_2()
-                                        .rounded_sm()
-                                        .bg(theme::panel())
-                                        .text_xs()
-                                        .text_color(theme::muted())
-                                        .child(t.clone())
-                                },
-                            )))
-                        })
-                        .when_some(l.description.clone(), |d, desc| {
-                            d.child(div().text_sm().child(desc))
-                        })
-                }
-            };
+    /// Indices into `content.tracks` of every layout that shares the selected track's folder.
+    fn sibling_layouts(&self) -> Vec<usize> {
+        let Some(t) = self.selected_track() else { return Vec::new() };
+        self.content.tracks.iter().enumerate().filter(|(_, e)| e.track_id == t.track_id).map(|(i, _)| i).collect()
+    }
+
+    fn tracks_page(&self, geo: DetailGeometry, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(t) = self.selected_track() else {
+            return div().p_4().text_color(theme::muted()).child("No track selected").into_any_element();
+        };
+        let l = &t.layout;
+        let dir = self.ac_root.as_ref().map(|r| r.join("content").join("tracks").join(&t.track_id));
+        let actions = div()
+            .child(button("tracks-change", "Change track").on_click(cx.listener(|this, _, window, cx| {
+                this.open_picker(PickerKind::Track, window);
+                cx.notify();
+            })))
+            .when_some(dir, |d, dir| {
+                d.child(button("track-folder", "Open folder").on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&dir))))
+            })
+            .child(primary_button("drive-track", "Drive").on_click(cx.listener(Self::open_quick_drive)));
+        let place = [l.city.clone(), l.country.clone()]
+            .into_iter()
+            .flatten()
+            .filter(|s| !s.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let header = Self::detail_header(None, l.name.clone(), place, actions);
+
+        let siblings = self.sibling_layouts();
+        let strip = (siblings.len() > 1).then(|| {
+            let at = siblings.iter().position(|&i| Some(i) == self.track).unwrap_or(0);
+            let names: Vec<&str> = siblings.iter().map(|&i| self.content.tracks[i].layout.name.as_str()).collect();
+            let prefix = shared_name_prefix(&names);
+            let title = format!("LAYOUT {}/{} · {}", at + 1, siblings.len(), layout_short_name(&prefix, &l.name));
+            let items = div()
+                .id("layout-strip")
+                .flex()
+                .gap_2()
+                .overflow_x_scroll()
+                .track_scroll(&self.layout_strip)
+                .children(siblings.iter().enumerate().map(|(pos, &ix)| {
+                    let e = &self.content.tracks[ix];
+                    let label = layout_short_name(&prefix, &e.layout.name);
+                    Self::strip_thumb(("layout", pos), e.layout.preview.clone(), label, Some(ix) == self.track).on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            this.track = Some(ix);
+                            cx.notify();
+                        }),
+                    )
+                }));
+            (title, div().child(items))
+        });
+        // Kunos track previews are ~355x200, so the vector racing line is the hero and the
+        // photo sits in the info card near its native size.
+        let hero = div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(theme::RADIUS_SM))
+            .bg(theme::bg())
+            .child(track_map(l.racing_line.clone(), l.outline.clone(), geo.preview_h - 24.));
+        let media = Self::detail_media(geo, hero, strip);
+        let photo_h = ((geo.side_w - CARD_CHROME) * 9. / 16.).min(TRACK_PHOTO_MAX_H);
+
+        let mut tiles = div().grid().grid_cols(2).gap_2();
+        if let Some(len) = l.length.as_deref().map(format_track_length).filter(|s| !s.is_empty()) {
+            tiles = tiles.child(stat_tile("Length".into(), len));
+        }
+        if let Some(p) = l.pitboxes {
+            tiles = tiles.child(stat_tile("Pit boxes".into(), p.to_string()));
+        }
+        let mut info = div().flex().flex_col().gap_1();
+        for (k, v) in [("Country", &l.country), ("City", &l.city)] {
+            if let Some(v) = v.as_ref().filter(|v| !v.trim().is_empty()) {
+                info = info.child(field(k, v.clone()));
+            }
+        }
+        info = info.child(field("Folder", t.key()));
+        let side = Self::detail_side("track-side", geo)
+            .child(picture(l.preview.clone(), photo_h).w_full())
+            .child(tiles)
+            .child(section_title("Details"))
+            .child(info)
+            .when(!l.tags.is_empty(), |d| d.child(tag_list(&l.tags)))
+            .when_some(l.description.clone(), |d, desc| {
+                d.child(section_title("About")).child(div().text_sm().text_color(theme::muted()).child(desc))
+            });
+
         div()
             .id("track-detail")
             .size_full()
             .overflow_y_scroll()
-            .child(detail)
+            .child(div().flex().flex_col().gap_3().p_4().child(header).child(Self::detail_row(geo, media, side)))
+            .into_any_element()
     }
 
     /// `text_w`: pixel width for wrapping text in the page column (see [`text_w`]).
@@ -4550,8 +4748,18 @@ impl Render for CmApp {
                     let (car_h, track_h) = drive_geometry(f32::from(vp.width), f32::from(vp.height));
                     self.quick_drive_page(car_h, track_h, cx).into_any_element()
                 }
-                Page::Cars => self.cars_page(cx).into_any_element(),
-                Page::Tracks => self.tracks_page(cx).into_any_element(),
+                Page::Cars => {
+                    let vp = window.viewport_size();
+                    let strip = self.selected_car().is_some_and(|c| !c.skins.is_empty());
+                    let geo = detail_geometry(f32::from(vp.width), f32::from(vp.height), strip);
+                    self.cars_page(geo, cx).into_any_element()
+                }
+                Page::Tracks => {
+                    let vp = window.viewport_size();
+                    let strip = self.sibling_layouts().len() > 1;
+                    let geo = detail_geometry(f32::from(vp.width), f32::from(vp.height), strip);
+                    self.tracks_page(geo, cx).into_any_element()
+                }
                 Page::Career | Page::SpecialEvents => div().size_full().children(self.events.clone()).into_any_element(),
                 Page::Install => self
                     .install_page(text_w(main_w, INSTALL_MAX_W), cx)

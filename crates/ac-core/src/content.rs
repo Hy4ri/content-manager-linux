@@ -207,6 +207,15 @@ pub fn plain_text(s: &str) -> String {
             _ => {}
         }
     }
+    // Entities are decoded after tag stripping so an escaped `&lt;` survives as text.
+    let out = out
+        .replace("&nbsp;", " ")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
     out.lines().map(str::trim).collect::<Vec<_>>().join("\n").trim().to_owned()
 }
 
