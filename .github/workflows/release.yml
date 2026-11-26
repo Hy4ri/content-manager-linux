@@ -210,9 +210,74 @@ jobs:
           path: dist/*.AppImage
           retention-days: 7
 
+  build-arch:
+    name: Build Arch Linux Package
+    needs: [prepare, build-appimage]
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - name: Download AppImage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-appimage
+          path: dist
+
+      - name: Build and verify Arch package
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.prepare.outputs.version }}"
+          TAG="${{ needs.prepare.outputs.tag }}"
+          APPIMAGE="dist/cm-rs-${TAG}-x86_64.AppImage"
+
+          pacman -Syu --noconfirm python
+
+          APPIMAGE_SHA256="$(sha256sum "$APPIMAGE" | awk '{print $1}')"
+          LICENSE_SHA256="$(sha256sum LICENSE | awk '{print $1}')"
+          python3 scripts/update-pkgbuild.py "$VERSION" "$APPIMAGE_SHA256" "$LICENSE_SHA256"
+
+          useradd -m builder
+          mkdir -p /tmp/arch-build
+          cp packaging/arch/PKGBUILD /tmp/arch-build/PKGBUILD
+          cp "$APPIMAGE" "/tmp/arch-build/cm-rs-${TAG}-x86_64.AppImage"
+          cp LICENSE "/tmp/arch-build/cm-rs-${TAG}-LICENSE"
+          chown -R builder:builder /tmp/arch-build
+
+          su -s /bin/bash builder -c "cd /tmp/arch-build && makepkg --nodeps --noconfirm && makepkg --printsrcinfo > .SRCINFO"
+
+          mkdir -p dist-arch
+          cp /tmp/arch-build/cm-rs-bin-*.pkg.tar.zst dist-arch/
+          cp /tmp/arch-build/.SRCINFO dist-arch/SRCINFO
+
+          # Smoke-test install, shared library resolution, and CLI entry point on real Arch.
+          pacman -U --noconfirm dist-arch/cm-rs-bin-*.pkg.tar.zst
+          ! ldd /opt/cm-rs/cm-rs /opt/cm-rs/libcef.so | grep -q 'not found'
+          cm-rs --help
+
+      - name: Upload Arch package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-arch
+          path: dist-arch/*.pkg.tar.zst
+          retention-days: 7
+
+      - name: Upload Arch .SRCINFO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-arch-srcinfo
+          path: dist-arch/SRCINFO
+          retention-days: 7
+
   publish:
-    name: Publish GitHub Release and Pin Flake
-    needs: [prepare, build-tarball, build-appimage]
+    name: Publish GitHub Release and Pin Packaging
+    needs: [prepare, build-tarball, build-appimage, build-arch]
     runs-on: ubuntu-latest
 
     steps:
@@ -226,13 +291,20 @@ jobs:
       - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: release-*
           path: dist
           merge-multiple: true
+
+      - name: Stage .SRCINFO and keep release dist clean
+        run: |
+          if [ -f dist/SRCINFO ]; then
+            mv dist/SRCINFO packaging/arch/.SRCINFO
+          fi
 
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum *.tar.gz *.AppImage > SHA256SUMS.txt
+          sha256sum *.tar.gz *.AppImage *.pkg.tar.zst > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Upload combined release artifact
@@ -254,18 +326,23 @@ jobs:
           files: |
             dist/*
 
-      - name: Pin flake to the published binary
+      - name: Pin flake and Arch PKGBUILD to the published release
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
           TAG="${{ needs.prepare.outputs.tag }}"
           TARBALL="dist/cm-rs-${TAG}-linux-x86_64.tar.gz"
+          APPIMAGE="dist/cm-rs-${TAG}-x86_64.AppImage"
           HASH="$(python3 -c 'import hashlib, base64, sys; print("sha256-" + base64.b64encode(hashlib.sha256(open(sys.argv[1], "rb").read()).digest()).decode())' "$TARBALL")"
           printf '{\n  "version": "%s",\n  "hash": "%s"\n}\n' "$VERSION" "$HASH" > packaging/release.json
 
+          APPIMAGE_SHA256="$(sha256sum "$APPIMAGE" | awk '{print $1}')"
+          LICENSE_SHA256="$(sha256sum LICENSE | awk '{print $1}')"
+          python3 scripts/update-pkgbuild.py "$VERSION" "$APPIMAGE_SHA256" "$LICENSE_SHA256"
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add packaging/release.json
+          git add packaging/release.json packaging/arch/PKGBUILD packaging/arch/.SRCINFO
           if ! git diff --cached --quiet; then
-            git commit -m "chore(release): pin flake to ${TAG}"
+            git commit -m "chore(release): pin flake and Arch PKGBUILD to ${TAG}"
             git push origin "HEAD:${{ github.ref_name }}"
           fi

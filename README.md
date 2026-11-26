@@ -44,10 +44,23 @@ chmod +x cm-rs-v*-x86_64.AppImage
 ./cm-rs-v*-x86_64.AppImage
 ```
 
-### 2. Portable Tarball
+### 2. Arch Linux (`pacman` / `PKGBUILD`)
+Download `cm-rs-bin-*-x86_64.pkg.tar.zst` from [GitHub Releases](https://github.com/Hy4ri/content-manager-linux/releases/latest) and install with `pacman`:
+
+```sh
+sudo pacman -U cm-rs-bin-*-x86_64.pkg.tar.zst
+```
+
+Or build the package locally from the in-repo [`packaging/arch/PKGBUILD`](packaging/arch/PKGBUILD):
+
+```sh
+cd packaging/arch && makepkg -si
+```
+
+### 3. Portable Tarball
 Download `cm-rs-v*-linux-x86_64.tar.gz` from [GitHub Releases](https://github.com/Hy4ri/content-manager-linux/releases/latest), extract it, and run `./cm-rs`.
 
-### 3. Nix / NixOS
+### 4. Nix / NixOS
 ```sh
 # Run directly
 nix run github:Hy4ri/content-manager-linux
