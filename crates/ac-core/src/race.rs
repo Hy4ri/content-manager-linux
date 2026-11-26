@@ -140,6 +140,8 @@ pub fn clear_up(file: &mut IniFile) {
     file.section_mut("REPLAY").set_bool("ACTIVE", false);
     let remote = file.section_mut("REMOTE");
     remote.set_bool("ACTIVE", false);
+    // A server password from the last online session must not stay in the file.
+    remote.set("PASSWORD", "");
     remote.remove("__FEATURES");
     remote.remove("__CM_EXTENDED");
     file.section_mut("RESTART").set_bool("ACTIVE", false);

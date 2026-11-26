@@ -15,6 +15,8 @@ dirs.workspace = true
 zip.workspace = true
 sevenz-rust2.workspace = true
 unrar.workspace = true
+# Lobby and server HTTP (all plain HTTP, so no TLS). Already in the lock through download-cef.
+ureq = { version = "3.4", default-features = false, features = ["gzip"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

@@ -22,6 +22,18 @@ pub struct LaunchOptions {
 
 /// Writes race.ini for `q` into AC's Documents folder. Returns the path.
 pub fn write_race_ini(ac_root: &Path, q: &QuickDrive) -> Result<PathBuf> {
+    edit_race_ini(ac_root, |ini| crate::race::apply(ini, q))
+}
+
+/// Writes race.ini to join a server: `q` picks the car, skin and track, `join` fills `[REMOTE]`.
+pub fn write_online_race_ini(ac_root: &Path, q: &QuickDrive, join: &crate::online::Join) -> Result<PathBuf> {
+    edit_race_ini(ac_root, |ini| {
+        crate::race::apply(ini, q);
+        crate::online::apply_remote(ini, join);
+    })
+}
+
+fn edit_race_ini(ac_root: &Path, edit: impl FnOnce(&mut IniFile)) -> Result<PathBuf> {
     let path = paths::race_ini_path(ac_root).context(
         "can't find AC's Documents folder. On Linux, start Assetto Corsa from Steam once so Proton creates its prefix.",
     )?;
@@ -30,7 +42,7 @@ pub fn write_race_ini(ac_root: &Path, q: &QuickDrive) -> Result<PathBuf> {
         // First run: start from Kunos' template so every section AC expects exists.
         ini = IniFile::load_or_default(&ac_root.join("cfg").join("race.ini"))?;
     }
-    crate::race::apply(&mut ini, q);
+    edit(&mut ini);
     ini.save(&path)?;
     Ok(path)
 }

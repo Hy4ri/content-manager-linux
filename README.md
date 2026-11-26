@@ -2,10 +2,7 @@
 
 A native Linux Content Manager for Assetto Corsa, built in Rust with [GPUI](https://gpui.rs). Launches `acs.exe` through Proton with Steam runtime integration, Custom Shaders Patch (CSP) support, and controller-first navigation.
 
-> [!NOTE]
-> Single-player and local content management only for now. Online server browsing (Kunos lobbies, LFM, etc.) is not implemented yet.
-
-**Includes:** Quick Drive, Garage & `data.acd` pack/unpack, Track layouts, Career & Special Events, embedded Mod Browser + `.zip`/`.7z`/`.rar` installer & Installed Mods manager, Game & CSP settings, gamepad navigation, and a CLI.
+**Includes:** Quick Drive, Garage & `data.acd` pack/unpack, Track layouts, Career & Special Events, Online server browser with favourites and password servers, embedded Mod Browser + `.zip`/`.7z`/`.rar` installer & Installed Mods manager, Game & CSP settings, gamepad navigation, and a CLI.
 
 ![Quick Drive](docs/screenshots/quick-drive.png)
 
@@ -103,6 +100,16 @@ cargo build --release -p cm-app
   - *`dbghelp` startup crash*: Wine's builtin `dbghelp` can fail with `Failed to patch Assetto Corsa`. `cm-rs` does not bundle a third-party `dbghelp` shim, but if you place a local `dbghelp.dll` proxy (regular file, not a symlink) alongside `dbghelp_wine.dll` and `acs.publics.tsv` in `pfx/drive_c/windows/system32`, `cm-rs` detects it and appends `dbghelp=n,b` to `WINEDLLOVERRIDES`.
   - *Missing fonts*: CSP expects `Verdana` and `Segoe UI` in `pfx/drive_c/windows/Fonts`. If it exits with a missing-font error, install Microsoft Core Fonts into the prefix (e.g. `winetricks corefonts`) and copy any remaining TTFs from Assetto Corsa's `content/fonts` folder.
 
+## Online
+
+- **Servers** lists every server in the Kunos lobby with live ping. "Show only" filters (installed content, with drivers, free slots, no password) and the sortable column headers (ping, server, track, drivers; press again to reverse) work on a controller; text search is keyboard-only (`/`). The last list is kept in `~/.cache/cm-rs/lobby.json`, so the tab opens at once while a fresh list downloads.
+- Opening a server shows its track, session, conditions and cars with free slots, as cards or as a **Details** table with each car's power, torque, weight, power/weight, top speed and 0–100. Missing cars or tracks are marked, and Join stays disabled with the reason shown until the server can be joined.
+- **Password servers**: type the password on the server page. It is kept in memory until `cm-rs` closes, never saved, and cleared from `race.ini` when the session ends.
+- **Favourites** (the ☆ on a row, or `X`) and **Recent** are stored in `~/.config/cm-rs/online.toml`. **Add server** takes a `host:port` (the server's HTTP port) for servers that are not in the lobby.
+- Steam must be running and signed in: servers identify drivers by their Steam account.
+- After the game closes, `cm-rs` reads the game's log and says why a join failed (wrong password, no free slot, server unreachable, or the server's own reason).
+- Not supported yet: booking servers and Content Manager's extended server list.
+
 ---
 
 ## Config & CLI
@@ -115,6 +122,9 @@ cm-rs list cars|tracks|events                          # list installed content
 cm-rs acd unpack <car>/data.acd                        # unpack car data.acd
 cm-rs acd pack <car>/data                              # pack data/ back to data.acd
 cm-rs install mod-package.zip                          # install .zip, .7z, or .rar mod
+cm-rs online list [count]                              # busiest lobby servers with ping
+cm-rs online info <host:http_port>                     # one server: session, cars, free slots
+cm-rs online join <host:http_port> <car> [password]    # join with your Drive settings
 ```
 
 ---

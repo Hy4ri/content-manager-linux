@@ -19,6 +19,7 @@ pub mod install;
 pub mod json;
 pub mod launch;
 pub mod mods;
+pub mod online;
 pub mod paths;
 pub mod race;
 pub mod settings;
