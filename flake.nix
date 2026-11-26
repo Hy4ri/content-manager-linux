@@ -152,7 +152,7 @@
             inherit (release) version;
 
             src = pkgs.fetchurl {
-              url = "https://github.com/Hy4ri/cm-rs/releases/download/v${release.version}/cm-rs-v${release.version}-linux-x86_64.tar.gz";
+              url = "https://github.com/Hy4ri/content-manager-linux/releases/download/v${release.version}/cm-rs-v${release.version}-linux-x86_64.tar.gz";
               hash = release.hash;
             };
 

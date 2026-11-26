@@ -25,8 +25,11 @@ Tokens live in `crates/cm-app/src/theme.rs`. Use token functions instead of hard
 | `accent()` | `#f73152` | Primary CTAs, active tabs/pills, and focus rings |
 | `accent_hover()` | `#ff5470` | Hover state for primary CTAs |
 | `on_accent()` | `#111111` | High-contrast dark text rendered on `accent()` or bright status pills |
+| `on_accent_divider()` | `rgba(17, 17, 17, 0.25)` | Subtle divider inside primary accent buttons |
 | `ok()` | `#5fc77a` | Completed states, earned medals, and positive status |
 | `error()` | `#ffa23d` | Errors and warnings (amber, never red, so errors never read as selected accent) |
+| `medal_bronze()` / `medal_silver()` / `medal_gold()` | `#c87a4b` / `#c4c8cf` / `#e8bd4f` | Career and Special Event medal tiers |
+| `scrim()` / `shadow()` | `rgba(0, 0, 0, 0.55)` / `rgba(0, 0, 0, 0.45)` | Modal backdrop scrim and dropdown shadow |
 
 ### Radii & Touch/Focus Targets
 - `RADIUS_SM` (`6.0` px): buttons, chips, badges, inputs, and image frames.

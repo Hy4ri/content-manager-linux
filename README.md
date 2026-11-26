@@ -2,17 +2,21 @@
 
 A native Linux Content Manager for Assetto Corsa, built in Rust with [GPUI](https://gpui.rs). Launches `acs.exe` through Proton with Steam runtime integration, Custom Shaders Patch (CSP) support, and controller-first navigation.
 
-**Includes:** Quick Drive, Garage & `data.acd` pack/unpack, Track layouts, Career & Special Events, Online server browser with favourites and password servers, embedded Mod Browser + `.zip`/`.7z`/`.rar` installer & Installed Mods manager, Game & CSP settings, gamepad navigation, and a CLI.
+**Includes:** Quick Drive (with time-of-day slider and weather picker), Garage & `data.acd` pack/unpack, Track layouts & track picker, Career & Special Events, Online server browser with favourites and password servers, embedded Mod Browser + `.zip`/`.7z`/`.rar` installer & Installed Mods manager, Game & CSP settings, controller-first navigation with inline badges, launch update checks, and a CLI.
 
 ![Quick Drive](docs/screenshots/quick-drive.png)
 
 ## Screenshots
 
-| Garage | Track Layouts |
+| Online Server Browser | Garage |
 | :---: | :---: |
-| ![Cars](docs/screenshots/cars.png) | ![Tracks](docs/screenshots/tracks.png) |
+| ![Online](docs/screenshots/online.png) | ![Cars](docs/screenshots/cars.png) |
 
-| Car & Track Picker (gamepad friendly) | Game Settings |
+| Track Layouts | Track Picker |
+| :---: | :---: |
+| ![Tracks](docs/screenshots/tracks.png) | ![Track Picker](docs/screenshots/track-picker.png) |
+
+| Car Picker (gamepad friendly) | Game Settings |
 | :---: | :---: |
 | ![Picker](docs/screenshots/picker.png) | ![Game Settings](docs/screenshots/game-settings.png) |
 
