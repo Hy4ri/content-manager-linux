@@ -432,7 +432,9 @@ fn has_key(bitmap: &str, bit: usize) -> bool {
         .is_some_and(|w| w & (1 << (bit % bits)) != 0)
 }
 
-/// `/dev/input/event*` devices that have gamepad face buttons.
+/// `/dev/input/event*` devices that have gamepad face buttons and sticks/d-pad axes.
+/// Requiring an absolute axis filters out virtual keyboard/mouse uinput devices like `ydotoold`
+/// that advertise all key codes with `capabilities/abs == 0`.
 /// Returns (path, label, vendor_id, sys_event_name).
 fn scan_gamepad_devices() -> Vec<(PathBuf, String, u16, String)> {
     let mut out = Vec::new();
@@ -443,7 +445,12 @@ fn scan_gamepad_devices() -> Vec<(PathBuf, String, u16, String)> {
         }
         let dev = entry.path().join("device");
         let keys = fs::read_to_string(dev.join("capabilities/key")).unwrap_or_default();
-        if has_key(&keys, BTN_SOUTH) {
+        let abs = fs::read_to_string(dev.join("capabilities/abs")).unwrap_or_default();
+        let has_pad_axis = has_key(&abs, ABS_X as usize)
+            || has_key(&abs, ABS_Y as usize)
+            || has_key(&abs, ABS_HAT0X as usize)
+            || has_key(&abs, ABS_HAT0Y as usize);
+        if has_key(&keys, BTN_SOUTH) && has_pad_axis {
             let label = fs::read_to_string(dev.join("name")).unwrap_or_default().trim().to_owned();
             let vendor_str = fs::read_to_string(dev.join("id/vendor")).unwrap_or_default();
             let vendor = u16::from_str_radix(vendor_str.trim(), 16).unwrap_or(0);

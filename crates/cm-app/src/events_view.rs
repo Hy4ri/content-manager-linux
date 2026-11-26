@@ -14,9 +14,13 @@ use gpui::{
 };
 
 use crate::{
+    nav::{InputDevice, NavAction, PadKind},
     text_input::TextInput,
     theme,
-    widgets::{button, chip, field, focus_ring, h_scroller, panel, picture, primary_button, section_title},
+    widgets::{
+        button, button_pad, chip, field, focus_ring, h_scroller, panel, picture, primary_button_pad,
+        section_title,
+    },
 };
 
 pub struct Running(pub bool);
@@ -107,6 +111,8 @@ pub struct EventsView {
     nationality: String,
     proton: Option<PathBuf>,
     proton_input: ac_core::settings::ProtonInputSettings,
+    input_device: InputDevice,
+    connected_pad: Option<PadKind>,
 }
 
 fn medal(n: u8) -> &'static str {
@@ -270,6 +276,8 @@ impl EventsView {
             nationality,
             proton,
             proton_input,
+            input_device: InputDevice::Mouse,
+            connected_pad: None,
         };
         view.reload(cx);
         view
@@ -299,6 +307,24 @@ impl EventsView {
         }
         self.refilter(cx);
         cx.notify();
+    }
+
+    pub fn set_input_device(&mut self, device: InputDevice, cx: &mut Context<Self>) {
+        if self.input_device != device {
+            self.input_device = device;
+            cx.notify();
+        }
+    }
+
+    pub fn set_connected_pad(&mut self, pad: Option<PadKind>, cx: &mut Context<Self>) {
+        if self.connected_pad != pad {
+            self.connected_pad = pad;
+            cx.notify();
+        }
+    }
+
+    fn pad_label(&self, a: NavAction) -> Option<&'static str> {
+        self.connected_pad.map(|p| p.label(a))
     }
 
     pub fn set_running(&mut self, running: bool, cx: &mut Context<Self>) {
@@ -538,6 +564,10 @@ impl EventsView {
                 self.scroll.scroll_to_item(next, ScrollStrategy::Center);
             }
             "X" => self.difficulty = (self.difficulty + 1) % 3,
+            "Y" => {
+                self.reload(cx);
+                return true;
+            }
             "START" | "A" => self.start(cx),
             _ => {}
         }
@@ -556,6 +586,10 @@ impl EventsView {
                     "DPAD_RIGHT" if n > 0 => self.series = (self.series + 1).min(n - 1),
                     "DPAD_UP" if n > 0 => self.series = self.series.saturating_sub(cols),
                     "DPAD_DOWN" if n > 0 => self.series = (self.series + cols).min(n - 1),
+                    "Y" => {
+                        self.reload(cx);
+                        return true;
+                    }
                     "A" | "START" if n > 0 => {
                         self.open_series(self.series, cx);
                         return true;
@@ -573,6 +607,10 @@ impl EventsView {
                         self.screen = CareerScreen::Series;
                         self.message = None;
                         cx.notify();
+                        return true;
+                    }
+                    "Y" => {
+                        self.reload(cx);
                         return true;
                     }
                     "DPAD_LEFT" if n > 0 => self.selected = self.selected.saturating_sub(1),
@@ -593,6 +631,11 @@ impl EventsView {
                     "B" => {
                         self.screen = CareerScreen::Events;
                         self.message = None;
+                        cx.notify();
+                        return true;
+                    }
+                    "X" => {
+                        self.show_config = !self.show_config;
                         cx.notify();
                         return true;
                     }
@@ -1145,7 +1188,7 @@ impl EventsView {
                             ),
                     )
                     .child(
-                        button("events-refresh", "Refresh")
+                        button_pad("events-refresh", "Refresh", self.pad_label(NavAction::Search))
                             .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
                     ),
             )
@@ -1268,7 +1311,7 @@ impl EventsView {
                             .items_center()
                             .gap_3()
                             .child(
-                                button("career-back-series", "← All Series").on_click(
+                                button_pad("career-back-series", "← All Series", self.pad_label(NavAction::Back)).on_click(
                                     cx.listener(|this, _, _, cx| {
                                         this.screen = CareerScreen::Series;
                                         this.message = None;
@@ -1343,7 +1386,7 @@ impl EventsView {
                                         )
                                     })
                                     .child(
-                                        button("events-refresh", "Refresh")
+                                        button_pad("events-refresh", "Refresh", self.pad_label(NavAction::Search))
                                             .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
                                     ),
                             ),
@@ -1840,13 +1883,14 @@ impl EventsView {
                     .gap_2()
                     .child(section_title("Session schedule"))
                     .child(
-                        button(
+                        button_pad(
                             "toggle-event-config",
                             if self.show_config {
                                 "Hide race config"
                             } else {
                                 "Show race config"
                             },
+                            self.pad_label(NavAction::Secondary),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.show_config = !this.show_config;
@@ -2078,13 +2122,14 @@ impl EventsView {
                 .text_color(theme::muted()),
             )
             .child(
-                primary_button(
+                primary_button_pad(
                     "event-start",
                     if self.running {
                         "Game running…"
                     } else {
                         "Start event"
                     },
+                    self.pad_label(NavAction::Confirm),
                 )
                 .when(disabled, |d| d.opacity(0.4))
                 .when(!disabled, |d| {
@@ -2112,9 +2157,10 @@ impl EventsView {
                             .items_center()
                             .gap_3()
                             .child(
-                                button(
+                                button_pad(
                                     "career-back-events",
                                     format!("← {}", series.name),
+                                    self.pad_label(NavAction::Back),
                                 )
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.screen = CareerScreen::Events;
@@ -2135,16 +2181,24 @@ impl EventsView {
                             .items_center()
                             .gap_2()
                             .child(
-                                button("career-prev-event", "← Prev")
-                                    .when(!has_prev, |d| d.opacity(0.4))
-                                    .when(has_prev, |d| {
-                                        d.on_click(cx.listener(|this, _, _, cx| {
-                                            this.step_event(-1, cx);
-                                        }))
-                                    }),
+                                button_pad(
+                                    "career-prev-event",
+                                    "← Prev",
+                                    self.connected_pad.map(|_| "◀"),
+                                )
+                                .when(!has_prev, |d| d.opacity(0.4))
+                                .when(has_prev, |d| {
+                                    d.on_click(cx.listener(|this, _, _, cx| {
+                                        this.step_event(-1, cx);
+                                    }))
+                                }),
                             )
                             .child(
-                                button("career-next-event", "Next →")
+                                button_pad(
+                                    "career-next-event",
+                                    "Next →",
+                                    self.connected_pad.map(|_| "▶"),
+                                )
                                     .when(!has_next, |d| d.opacity(0.4))
                                     .when(has_next, |d| {
                                         d.on_click(cx.listener(|this, _, _, cx| {
@@ -2696,13 +2750,14 @@ impl EventsView {
                 }),
             )
             .child(
-                primary_button(
+                primary_button_pad(
                     "event-start",
                     if self.running {
                         "Game running…"
                     } else {
                         "Start event"
                     },
+                    self.pad_label(NavAction::Confirm),
                 )
                 .when(disabled, |d| d.opacity(0.4))
                 .when(!disabled, |d| {
@@ -2799,7 +2854,7 @@ impl EventsView {
                                     ),
                             )
                             .child(
-                                button("events-refresh", "Refresh")
+                                button_pad("events-refresh", "Refresh", self.pad_label(NavAction::Search))
                                     .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
                             ),
                     ),

@@ -23,6 +23,35 @@ pub enum NavAction {
     Menu,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PadKind {
+    Xbox,
+    PlayStation,
+}
+
+impl PadKind {
+    pub fn input_device(self) -> InputDevice {
+        match self {
+            PadKind::Xbox => InputDevice::Xbox,
+            PadKind::PlayStation => InputDevice::PlayStation,
+        }
+    }
+
+    pub fn label(self, a: NavAction) -> &'static str {
+        self.input_device().label(a)
+    }
+
+    /// Optional override for headless UI QA (`CM_RS_FORCE_PAD=xbox|ps`).
+    pub fn from_env() -> Option<Self> {
+        let v = std::env::var("CM_RS_FORCE_PAD").ok()?;
+        match v.trim().to_ascii_lowercase().as_str() {
+            "xbox" => Some(PadKind::Xbox),
+            "ps" | "playstation" | "sony" | "dualsense" | "ds4" => Some(PadKind::PlayStation),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum InputDevice {
     #[default]
@@ -36,6 +65,15 @@ impl InputDevice {
     /// Focus rings / indicators are shown for keyboard and gamepad, but hidden for mouse.
     pub fn shows_focus(self) -> bool {
         !matches!(self, InputDevice::Mouse)
+    }
+
+    /// Device whose button labels should be rendered in hints and tab bars.
+    /// Whenever a controller is connected, its glyphs stay visible even after mouse movement.
+    pub fn glyph_device(self, connected_pad: Option<PadKind>) -> InputDevice {
+        match connected_pad {
+            Some(pad) => pad.input_device(),
+            None => self,
+        }
     }
 
     /// Hint-bar glyph text per device:
@@ -107,7 +145,7 @@ pub fn from_pad(name: &str) -> Option<NavAction> {
         "LTRIGGER" => Some(NavAction::SubPrev),
         "RTRIGGER" => Some(NavAction::SubNext),
         "START" => Some(NavAction::Primary),
-        "BACK" => Some(NavAction::Menu),
+        "BACK" | "VIEW" => Some(NavAction::Menu),
         "DPAD_UP" => Some(NavAction::Up),
         "DPAD_DOWN" => Some(NavAction::Down),
         "DPAD_LEFT" => Some(NavAction::Left),

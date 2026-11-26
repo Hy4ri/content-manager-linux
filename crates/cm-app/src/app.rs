@@ -27,12 +27,12 @@ use crate::events_view::{EventsView, Running};
 use crate::csp_view::CspView;
 use crate::online_view::{Installed, LaunchConfig, OnlineView, Source as OnlineSource};
 use crate::mods_view::{ModsChanged, ModsNavigate, ModsTarget, ModsView};
-use crate::nav::NavAction;
+use crate::nav::{InputDevice, NavAction, PadKind};
 use crate::text_input::TextInput;
 use crate::theme;
 use crate::widgets::{
-    button, chip, field, focus_ring, h_scroller, hint, hint_bar, panel, picture, primary_button, section_title,
-    segmented, track_map,
+    button, button_pad, chip, field, focus_ring, h_scroller, hint, hint_bar, pad_badge, panel,
+    picture, primary_button, primary_button_pad, section_title, segmented, track_map,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -431,8 +431,10 @@ pub struct CmApp {
     picker_viewport_w: f32,
     skin_strip: gpui::ScrollHandle,
     layout_strip: gpui::ScrollHandle,
-    /// Last device that produced input; decides hint glyphs and focus-ring visibility.
-    input_device: crate::nav::InputDevice,
+    /// Last device that produced input; decides focus-ring visibility.
+    input_device: InputDevice,
+    /// Currently connected controller (if any); decides inline controller button badges and hints.
+    connected_pad: Option<PadKind>,
     car_brand: Option<String>,
     brand_menu_focus: Option<usize>,
     brand_menu_scroll: UniformListScrollHandle,
@@ -684,7 +686,8 @@ impl CmApp {
             picker_viewport_w: 1360.,
             skin_strip: gpui::ScrollHandle::new(),
             layout_strip: gpui::ScrollHandle::new(),
-            input_device: crate::nav::InputDevice::default(),
+            input_device: InputDevice::default(),
+            connected_pad: PadKind::from_env(),
             car_brand: None,
             brand_menu_focus: None,
             brand_menu_scroll: UniformListScrollHandle::new(),
@@ -1889,6 +1892,14 @@ impl CmApp {
                 })
                 .collect(),
         );
+        let tabs_row = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(tabs)
+            .when_some(self.pad_label(NavAction::Secondary), |d, lbl| {
+                d.child(pad_badge(lbl))
+            });
 
         let mut panels: Vec<Div> = Vec::new();
         let mut current = "";
@@ -1965,7 +1976,7 @@ impl CmApp {
                 d.child(button("game-revert", "Revert").on_click(cx.listener(Self::revert_game)))
             })
             .child(
-                primary_button("game-save", "Save")
+                primary_button_pad("game-save", "Save", self.pad_label(NavAction::Primary))
                     .when(dirty.is_empty(), |d| d.opacity(0.5))
                     .when(!dirty.is_empty(), |d| {
                         d.on_click(cx.listener(Self::save_game))
@@ -1998,7 +2009,7 @@ impl CmApp {
                                     .font_weight(FontWeight::BOLD)
                                     .child("Game settings"),
                             )
-                            .child(tabs)
+                            .child(tabs_row)
                             .children(panels),
                     ),
             )
@@ -2029,10 +2040,18 @@ impl CmApp {
                 if let Some(online) = &this.online { online.update(cx, |v, cx| v.set_running(event.0, cx)); }
                 cx.notify();
             }).detach();
-            view.update(cx, |view, cx| view.set_running(self.game_running, cx));
+            view.update(cx, |view, cx| {
+                view.set_running(self.game_running, cx);
+                view.set_input_device(self.input_device, cx);
+                view.set_connected_pad(self.connected_pad, cx);
+            });
             self.events = Some(view);
         } else if let Some(view) = &self.events {
-            view.update(cx, |view, cx| view.configure(career, self.settings.driver_name.clone(), self.settings.nationality.clone(), self.settings.proton.clone(), self.settings.proton_input.clone(), cx));
+            view.update(cx, |view, cx| {
+                view.configure(career, self.settings.driver_name.clone(), self.settings.nationality.clone(), self.settings.proton.clone(), self.settings.proton_input.clone(), cx);
+                view.set_input_device(self.input_device, cx);
+                view.set_connected_pad(self.connected_pad, cx);
+            });
         }
     }
 
@@ -2057,10 +2076,16 @@ impl CmApp {
                 this.goto_page(target, window, cx);
             })
             .detach();
-            view.update(cx, |v, cx| v.set_input_device(self.input_device, cx));
+            view.update(cx, |v, cx| {
+                v.set_input_device(self.input_device, cx);
+                v.set_connected_pad(self.connected_pad, cx);
+            });
             self.mods_view = Some(view);
         } else if let Some(view) = &self.mods_view {
-            view.update(cx, |v, cx| v.set_input_device(self.input_device, cx));
+            view.update(cx, |v, cx| {
+                v.set_input_device(self.input_device, cx);
+                v.set_connected_pad(self.connected_pad, cx);
+            });
         }
     }
 
@@ -2070,11 +2095,18 @@ impl CmApp {
             self.csp_view = None;
         }
         let device = self.input_device;
+        let pad = self.connected_pad;
         match &self.csp_view {
-            Some(view) => view.update(cx, |v, cx| v.set_input_device(device, cx)),
+            Some(view) => view.update(cx, |v, cx| {
+                v.set_input_device(device, cx);
+                v.set_connected_pad(pad, cx);
+            }),
             None => {
                 let view = cx.new(|cx| CspView::new(root, cx));
-                view.update(cx, |v, cx| v.set_input_device(device, cx));
+                view.update(cx, |v, cx| {
+                    v.set_input_device(device, cx);
+                    v.set_connected_pad(pad, cx);
+                });
                 self.csp_view = Some(view);
             }
         }
@@ -2097,10 +2129,12 @@ impl CmApp {
         }
         let config = self.online_config();
         let device = self.input_device;
+        let pad = self.connected_pad;
         match &self.online {
             Some(view) => view.update(cx, |v, cx| {
                 v.configure(config, cx);
                 v.set_input_device(device, cx);
+                v.set_connected_pad(pad, cx);
                 v.set_source(source, cx);
             }),
             None => {
@@ -2115,6 +2149,7 @@ impl CmApp {
                 .detach();
                 view.update(cx, |v, cx| {
                     v.set_input_device(device, cx);
+                    v.set_connected_pad(pad, cx);
                     v.set_running(running, cx);
                 });
                 self.online = Some(view);
@@ -2203,6 +2238,34 @@ impl CmApp {
         self.layout_strip.scroll_to_item(next);
     }
 
+    fn glyph_device(&self) -> InputDevice {
+        self.input_device.glyph_device(self.connected_pad)
+    }
+
+    fn pad_label(&self, a: NavAction) -> Option<&'static str> {
+        self.connected_pad.map(|p| p.label(a))
+    }
+
+    fn set_connected_pad(&mut self, pad: Option<PadKind>, cx: &mut Context<Self>) {
+        if self.connected_pad == pad {
+            return;
+        }
+        self.connected_pad = pad;
+        if let Some(events) = &self.events {
+            events.update(cx, |v, cx| v.set_connected_pad(pad, cx));
+        }
+        if let Some(mods_view) = &self.mods_view {
+            mods_view.update(cx, |v, cx| v.set_connected_pad(pad, cx));
+        }
+        if let Some(csp_view) = &self.csp_view {
+            csp_view.update(cx, |v, cx| v.set_connected_pad(pad, cx));
+        }
+        if let Some(online) = &self.online {
+            online.update(cx, |v, cx| v.set_connected_pad(pad, cx));
+        }
+        cx.notify();
+    }
+
     /// One controller press aimed at the launcher UI. Ignored while a bind is
     /// being captured, the game runs, or the window is in the background.
     fn pad_press(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -2223,10 +2286,16 @@ impl CmApp {
             return;
         }
         if matches!(self.page, Page::Career | Page::SpecialEvents) && !matches!(name, "LSHOULDER" | "RSHOULDER" | "LTRIGGER" | "RTRIGGER") {
+            let device = self.input_device;
             let handled = self
                 .events
                 .as_ref()
-                .is_some_and(|events| events.update(cx, |view, cx| view.pad(name, cx)));
+                .is_some_and(|events| {
+                    events.update(cx, |view, cx| {
+                        view.set_input_device(device, cx);
+                        view.pad(name, cx)
+                    })
+                });
             if handled || name != "B" {
                 return;
             }
@@ -2287,6 +2356,33 @@ impl CmApp {
             "DPAD_DOWN" => self.pad_move(1),
             "A" if self.page == Page::Cars => self.open_picker(PickerKind::Car, window),
             "A" if self.page == Page::Tracks => self.open_picker(PickerKind::Track, window),
+            "Y" if self.page == Page::Cars => {
+                if let Some(c) = self.selected_car() {
+                    let dir = c.dir.clone();
+                    cx.open_with_system(&dir);
+                }
+            }
+            "Y" if self.page == Page::Tracks => {
+                if let (Some(root), Some(t)) = (&self.ac_root, self.selected_track()) {
+                    let dir = root.join("content").join("tracks").join(&t.track_id);
+                    cx.open_with_system(&dir);
+                }
+            }
+            "X" if self.page == Page::Game => {
+                let at = Tab::ALL.iter().position(|&t| t == self.game_tab).unwrap_or(0);
+                self.game_tab = Tab::ALL[(at + 1) % Tab::ALL.len()];
+                self.capturing = None;
+                self.pad_capturing = None;
+                self.pad_task = None;
+            }
+            "START" if self.page == Page::Game => {
+                if self.game_cfg.as_ref().is_some_and(|c| !c.dirty_files().is_empty()) {
+                    self.save_game(&ClickEvent::default(), window, cx);
+                }
+            }
+            "START" if self.page == Page::Settings => {
+                self.save_settings(&ClickEvent::default(), window, cx);
+            }
             "B" if self.page != Page::QuickDrive => self.goto_page(Page::QuickDrive, window, cx),
             "DPAD_LEFT" | "DPAD_RIGHT" if self.page == Page::Cars => self.step_skin(if name == "DPAD_LEFT" { -1 } else { 1 }),
             "DPAD_LEFT" | "DPAD_RIGHT" if self.page == Page::Tracks => self.step_layout(if name == "DPAD_LEFT" { -1 } else { 1 }),
@@ -2300,28 +2396,51 @@ impl CmApp {
     #[cfg(target_os = "linux")]
     pub fn start_pad_nav(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use ac_core::gamepad::Nav;
+        let forced = PadKind::from_env();
         self.pad_nav = Some(cx.spawn_in(window, async move |this, cx| {
             let mut nav: Option<Nav> = None;
+            let mut last_pad: Option<PadKind> = forced;
             let mut ticks = 0u32;
             loop {
-                cx.background_executor().timer(std::time::Duration::from_millis(16)).await;
-                // Reopen every ~5 s so a pad that connects or reconnects is picked up.
-                if ticks % 312 == 0 {
+                // Reopen periodically so a pad that connects, switches, or unplugs is picked up quickly.
+                let poll_interval = if nav.is_some() { 180 } else { 90 };
+                if ticks % poll_interval == 0 {
                     nav = Nav::open().ok();
+                    let detected = nav.as_ref().map(|n| {
+                        if n.is_playstation() {
+                            PadKind::PlayStation
+                        } else {
+                            PadKind::Xbox
+                        }
+                    });
+                    let effective = forced.or(detected);
+                    if effective != last_pad {
+                        last_pad = effective;
+                        let ok = this.update_in(cx, |this, _, cx| this.set_connected_pad(effective, cx));
+                        if ok.is_err() {
+                            return;
+                        }
+                    }
                 }
+                cx.background_executor().timer(std::time::Duration::from_millis(16)).await;
                 ticks = ticks.wrapping_add(1);
                 let Some(nav) = nav.as_mut() else { continue };
                 let presses = nav.poll(std::time::Instant::now());
                 if presses.is_empty() {
                     continue;
                 }
-                let device = if nav.is_playstation() {
-                    crate::nav::InputDevice::PlayStation
+                let pad_kind = if nav.is_playstation() {
+                    PadKind::PlayStation
                 } else {
-                    crate::nav::InputDevice::Xbox
+                    PadKind::Xbox
                 };
+                let effective = forced.unwrap_or(pad_kind);
+                let device = effective.input_device();
                 for name in presses {
                     let ok = this.update_in(cx, |this, window, cx| {
+                        if this.connected_pad != Some(effective) {
+                            this.set_connected_pad(Some(effective), cx);
+                        }
                         this.input_device = device;
                         this.pad_press(name, window, cx)
                     });
@@ -2353,9 +2472,14 @@ impl CmApp {
     /// Brand, the seven tabs flanked by the L1/R1 glyphs, and a sub-tab strip when the tab has several pages.
     fn tab_bar(&self, cx: &mut Context<Self>) -> Div {
         let here = tab_of(self.page);
-        let dev = self.input_device;
+        let dev = self.glyph_device();
+        let pad_on = self.connected_pad.is_some();
         let glyph = |a: NavAction| {
-            div().px_2().py_0p5().rounded(px(theme::RADIUS_SM)).border_1().border_color(theme::border()).text_xs().text_color(theme::muted()).child(dev.label(a))
+            if pad_on {
+                pad_badge(dev.label(a))
+            } else {
+                div().px_2().py_0p5().rounded(px(theme::RADIUS_SM)).border_1().border_color(theme::border()).text_xs().text_color(theme::muted()).child(dev.label(a))
+            }
         };
         let mut tabs = div().flex().items_center().gap_1();
         for (i, (label, pages)) in TABS.iter().enumerate() {
@@ -2401,7 +2525,7 @@ impl CmApp {
 
     /// Bottom bar: the buttons that work on this page, then the status line.
     fn footer_bar(&self, status: SharedString, status_err: bool, cx: &mut Context<Self>) -> Div {
-        let dev = self.input_device;
+        let dev = self.glyph_device();
         let h = |a: NavAction, text: &str| hint(dev.label(a), text);
         let mut hints = vec![h(NavAction::TabPrev, "Prev tab"), h(NavAction::TabNext, "Next tab")];
         match self.page {
@@ -2433,32 +2557,43 @@ impl CmApp {
                 hints.push(h(NavAction::Primary, "Go!"));
             }
             Page::Cars | Page::Tracks => {
+                hints.push(hint(
+                    &format!("{} ↕", dev.label(NavAction::Up)),
+                    if self.page == Page::Cars { "Car" } else { "Track" },
+                ));
                 if self.page == Page::Cars && self.selected_car().is_some_and(|c| c.skins.len() > 1) {
-                    hints.push(h(NavAction::Left, "Skin"));
+                    hints.push(hint(&format!("{} ↔", dev.label(NavAction::Left)), "Skin"));
                 }
                 if self.page == Page::Tracks && self.sibling_layouts().len() > 1 {
-                    hints.push(h(NavAction::Left, "Layout"));
+                    hints.push(hint(&format!("{} ↔", dev.label(NavAction::Left)), "Layout"));
                 }
                 hints.push(h(NavAction::Confirm, "Change"));
+                hints.push(h(NavAction::Search, "Folder"));
                 hints.push(h(NavAction::Back, "Drive"));
                 hints.push(h(NavAction::Primary, "Go!"));
             }
             Page::Career => {
                 hints.push(h(NavAction::Up, "Move"));
                 hints.push(h(NavAction::Confirm, "Open / Start"));
+                hints.push(h(NavAction::Secondary, "Config"));
+                hints.push(h(NavAction::Search, "Refresh"));
                 hints.push(h(NavAction::Back, "Back"));
             }
             Page::SpecialEvents => {
                 hints.push(h(NavAction::Up, "Move"));
                 hints.push(h(NavAction::Confirm, "Start"));
+                hints.push(h(NavAction::Secondary, "Difficulty"));
+                hints.push(h(NavAction::Search, "Refresh"));
                 hints.push(h(NavAction::Back, "Back"));
             }
             Page::InstalledMods => {
                 hints.push(h(NavAction::SubPrev, "Prev page"));
                 hints.push(h(NavAction::SubNext, "Next page"));
-                hints.push(h(NavAction::Up, "Move"));
+                hints.push(hint(&format!("{} ↕", dev.label(NavAction::Up)), "Move"));
+                hints.push(hint(&format!("{} ↔", dev.label(NavAction::Left)), "Filter"));
                 hints.push(h(NavAction::Confirm, "Enable / Disable"));
-                hints.push(h(NavAction::Secondary, "Open folder"));
+                hints.push(h(NavAction::Secondary, "Folder"));
+                hints.push(h(NavAction::Search, "Refresh"));
                 hints.push(h(NavAction::Back, "Back"));
             }
             Page::Csp => {
@@ -2467,6 +2602,8 @@ impl CmApp {
                 hints.push(h(NavAction::Up, "Move"));
                 hints.push(h(NavAction::Left, "Change"));
                 hints.push(h(NavAction::Confirm, "Open / Toggle"));
+                hints.push(h(NavAction::Secondary, "Revert"));
+                hints.push(h(NavAction::Search, "Reload"));
                 hints.push(h(NavAction::Primary, "Save"));
                 hints.push(h(NavAction::Back, "Back"));
             }
@@ -2478,10 +2615,20 @@ impl CmApp {
                 }
                 None => hints.push(h(NavAction::Back, "Back")),
             },
-            Page::Install | Page::Game | Page::Settings => {
+            Page::Game => {
+                hints.push(h(NavAction::SubPrev, "Prev page"));
+                hints.push(h(NavAction::SubNext, "Next page"));
+                hints.push(h(NavAction::Secondary, "Next section"));
+                hints.push(h(NavAction::Primary, "Save"));
+                hints.push(h(NavAction::Back, "Back"));
+            }
+            Page::Install | Page::Settings => {
                 if TABS[tab_of(self.page)].1.len() > 1 {
                     hints.push(h(NavAction::SubPrev, "Prev page"));
                     hints.push(h(NavAction::SubNext, "Next page"));
+                }
+                if self.page == Page::Settings {
+                    hints.push(h(NavAction::Primary, "Save"));
                 }
                 hints.push(h(NavAction::Back, "Back"));
             }
@@ -2492,7 +2639,7 @@ impl CmApp {
             .child(status);
         let go = matches!(self.page, Page::QuickDrive | Page::Cars | Page::Tracks).then(|| {
             let label = if self.game_running { "Running…" } else { "Go!" };
-            primary_button("go", label)
+            primary_button_pad("go", label, self.pad_label(NavAction::Primary))
                 .when(self.game_running, |d| d.opacity(0.6))
                 .when(!self.game_running, |d| d.on_click(cx.listener(Self::go)))
         });
@@ -2501,7 +2648,7 @@ impl CmApp {
             let (label, enabled) = online.read(cx).primary(cx)?;
             let online = online.clone();
             Some(
-                primary_button("online-join", label)
+                primary_button_pad("online-join", label, self.pad_label(NavAction::Primary))
                     .when(!enabled, |d| d.opacity(0.6))
                     .on_click(move |_, _, cx| online.update(cx, |v, cx| v.join(cx))),
             )
@@ -2900,16 +3047,20 @@ impl CmApp {
                     };
                     self.set_picker_view(target, cx);
                 }
-                "B" | "VIEW" => self.view_menu_open = false,
+                "B" | "VIEW" | "BACK" => self.view_menu_open = false,
                 "X" => self.toggle_sort_menu(cx),
                 "Y" => {
-                    self.view_menu_open = false;
-                    let input = if kind == PickerKind::Car {
-                        self.car_filter.clone()
+                    if matches!(self.input_device, InputDevice::Xbox | InputDevice::PlayStation) {
+                        self.view_menu_open = false;
                     } else {
-                        self.track_filter.clone()
-                    };
-                    input.read(cx).focus(window);
+                        self.view_menu_open = false;
+                        let input = if kind == PickerKind::Car {
+                            self.car_filter.clone()
+                        } else {
+                            self.track_filter.clone()
+                        };
+                        input.read(cx).focus(window);
+                    }
                 }
                 _ => {}
             }
@@ -2962,15 +3113,19 @@ impl CmApp {
                     }
                 }
                 "B" | "X" => self.sort_menu_open = false,
-                "VIEW" => self.toggle_view_menu(cx),
+                "VIEW" | "BACK" => self.toggle_view_menu(cx),
                 "Y" => {
-                    self.sort_menu_open = false;
-                    let input = if kind == PickerKind::Car {
-                        self.car_filter.clone()
+                    if matches!(self.input_device, InputDevice::Xbox | InputDevice::PlayStation) {
+                        self.toggle_view_menu(cx);
                     } else {
-                        self.track_filter.clone()
-                    };
-                    input.read(cx).focus(window);
+                        self.sort_menu_open = false;
+                        let input = if kind == PickerKind::Car {
+                            self.car_filter.clone()
+                        } else {
+                            self.track_filter.clone()
+                        };
+                        input.read(cx).focus(window);
+                    }
                 }
                 _ => {}
             }
@@ -2996,11 +3151,25 @@ impl CmApp {
                 self.picker = None;
             }
             "Y" => {
-                let input = if kind == PickerKind::Car { self.car_filter.clone() } else { self.track_filter.clone() };
-                input.read(cx).focus(window);
+                if matches!(self.input_device, InputDevice::Xbox | InputDevice::PlayStation) {
+                    self.toggle_view_menu(cx);
+                } else {
+                    let input = if kind == PickerKind::Car { self.car_filter.clone() } else { self.track_filter.clone() };
+                    input.read(cx).focus(window);
+                }
             }
             "X" => self.toggle_sort_menu(cx),
-            "VIEW" => self.toggle_view_menu(cx),
+            "VIEW" | "BACK" => self.toggle_view_menu(cx),
+            "LSHOULDER" if len > 0 => {
+                let page = cols * if self.active_picker_view().is_list() { 6 } else { 3 };
+                self.picker_focus = at.saturating_sub(page);
+                self.picker_scroll.scroll_to_item(self.picker_focus / cols, ScrollStrategy::Center);
+            }
+            "RSHOULDER" if len > 0 => {
+                let page = cols * if self.active_picker_view().is_list() { 6 } else { 3 };
+                self.picker_focus = (at + page).min(len - 1);
+                self.picker_scroll.scroll_to_item(self.picker_focus / cols, ScrollStrategy::Center);
+            }
             "LTRIGGER" | "RTRIGGER" if kind == PickerKind::Car => self.open_brand_menu(window, cx),
             _ => {}
         }
@@ -3012,7 +3181,17 @@ impl CmApp {
             return;
         }
         if self.picker.is_none()
-            && !matches!(self.page, Page::QuickDrive | Page::Cars | Page::Tracks | Page::Csp)
+            && !matches!(
+                self.page,
+                Page::QuickDrive
+                    | Page::Cars
+                    | Page::Tracks
+                    | Page::Career
+                    | Page::SpecialEvents
+                    | Page::InstalledMods
+                    | Page::Csp
+                    | Page::Game
+            )
             && online_source(self.page).is_none()
         {
             return;
@@ -3220,6 +3399,12 @@ impl CmApp {
                     .text_sm()
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::panel_hover()))
+                    .when_some(
+                        (self.drive_rows().get(self.drive_focus) == Some(&DriveRow::Weather))
+                            .then(|| self.pad_label(NavAction::Confirm))
+                            .flatten(),
+                        |d, lbl| d.child(pad_badge(lbl)),
+                    )
                     .child(div().flex_1().min_w_0().truncate().child(name))
                     .child(div().text_xs().text_color(theme::muted()).child(if open { "▴" } else { "▾" }))
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -3370,11 +3555,18 @@ impl CmApp {
                         )
                         .child(div().text_sm().text_color(theme::muted()).truncate().child(car_sub)),
                 )
-                .child(button("car-change", "Change car").on_click(cx.listener(|this, _, window, cx| {
-                    this.drive_focus = 0;
-                    this.open_picker(PickerKind::Car, window);
-                    cx.notify();
-                }))),
+                .child(
+                    button_pad(
+                        "car-change",
+                        "Change car",
+                        (at == 0).then(|| self.pad_label(NavAction::Confirm)).flatten(),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.drive_focus = 0;
+                        this.open_picker(PickerKind::Car, window);
+                        cx.notify();
+                    })),
+                ),
         )
         .child(picture(skin.and_then(|s| s.preview.clone()), car_h).w_full())
         .child(
@@ -3384,7 +3576,10 @@ impl CmApp {
                 .gap_2()
                 .child(button("skin-prev", "◀").on_click(cx.listener(|this, _, _, cx| this.drive_adjust(DriveRow::Car, -1, cx))))
                 .child(div().flex_1().text_sm().text_color(theme::muted()).truncate().text_center().child(format!("Skin: {skin_label}")))
-                .child(button("skin-next", "▶").on_click(cx.listener(|this, _, _, cx| this.drive_adjust(DriveRow::Car, 1, cx)))),
+                .child(
+                    button_pad("skin-next", "▶", self.pad_label(NavAction::Secondary))
+                        .on_click(cx.listener(|this, _, _, cx| this.drive_adjust(DriveRow::Car, 1, cx))),
+                ),
         );
 
         let track_place = track
@@ -3431,11 +3626,18 @@ impl CmApp {
             track.and_then(|t| t.layout.outline.clone()),
             track_h,
         ))
-        .child(button("track-change", "Change").on_click(cx.listener(|this, _, window, cx| {
-            this.drive_focus = 1;
-            this.open_picker(PickerKind::Track, window);
-            cx.notify();
-        })));
+        .child(
+            button_pad(
+                "track-change",
+                "Change",
+                (at == 1).then(|| self.pad_label(NavAction::Confirm)).flatten(),
+            )
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.drive_focus = 1;
+                this.open_picker(PickerKind::Track, window);
+                cx.notify();
+            })),
+        );
 
         let mut session = div().flex().flex_col().gap_2().child(section_title("Session"));
         for (i, row) in rows.iter().enumerate().skip(2) {
@@ -3956,7 +4158,7 @@ impl CmApp {
                             .font_weight(FontWeight::BOLD)
                             .child("Choose a brand"),
                     )
-                    .child(button("brand-menu-back", "Back").on_click(cx.listener(
+                    .child(button_pad("brand-menu-back", "Back", self.pad_label(NavAction::Back)).on_click(cx.listener(
                         |this, _, _, cx| {
                             this.brand_menu_focus = None;
                             cx.notify();
@@ -3967,8 +4169,8 @@ impl CmApp {
             .child(grid)
             .child(hint_bar(
                 vec![
-                    hint(self.input_device.label(NavAction::Confirm), "Filter"),
-                    hint(self.input_device.label(NavAction::Back), "Back"),
+                    hint(self.glyph_device().label(NavAction::Confirm), "Filter"),
+                    hint(self.glyph_device().label(NavAction::Back), "Back"),
                 ],
                 None,
             ))
@@ -4248,7 +4450,7 @@ impl CmApp {
         if cars && self.brand_menu_focus.is_some() {
             return self.brand_menu(cx).into_any_element();
         }
-        let dev = self.input_device;
+        let dev = self.glyph_device();
         let (title, filter, counter, sort_label, desc) = if cars {
             (
                 "Choose a car",
@@ -4319,10 +4521,16 @@ impl CmApp {
             let mut h = vec![
                 hint(dev.label(NavAction::Confirm), "Pick"),
                 hint(dev.label(NavAction::Back), "Close"),
-                hint(dev.label(NavAction::Search), "Search"),
                 hint(dev.label(NavAction::Secondary), "Sort"),
             ];
-            if dev == crate::nav::InputDevice::Keyboard {
+            if self.connected_pad.is_some() {
+                h.push(hint(dev.label(NavAction::Search), "View"));
+                h.push(hint(
+                    &format!("{}/{}", dev.label(NavAction::TabPrev), dev.label(NavAction::TabNext)),
+                    "Page",
+                ));
+            } else {
+                h.push(hint(dev.label(NavAction::Search), "Search"));
                 h.push(hint("V", "View"));
             }
             if cars {
@@ -4356,9 +4564,13 @@ impl CmApp {
                         div()
                             .relative()
                             .child(
-                                button("pick-view", format!("View: {} ▾", active_view.label()))
-                                    .when(self.view_menu_open, |d| d.border_color(theme::accent()))
-                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_view_menu(cx))),
+                                button_pad(
+                                    "pick-view",
+                                    format!("View: {} ▾", active_view.label()),
+                                    self.pad_label(NavAction::Search),
+                                )
+                                .when(self.view_menu_open, |d| d.border_color(theme::accent()))
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_view_menu(cx))),
                             )
                             .when(self.view_menu_open, |d| {
                                 d.child(deferred(self.view_menu(cx)).with_priority(1))
@@ -4368,9 +4580,10 @@ impl CmApp {
                         div()
                             .relative()
                             .child(
-                                button(
+                                button_pad(
                                     "pick-sort",
                                     format!("Sort: {sort_label} {}", if desc { "↓" } else { "↑" }),
+                                    self.pad_label(NavAction::Secondary),
                                 )
                                 .when(self.sort_menu_open, |d| d.border_color(theme::accent()))
                                 .on_click(cx.listener(|this, _, _, cx| this.toggle_sort_menu(cx))),
@@ -4381,16 +4594,23 @@ impl CmApp {
                     )
                     .when(cars, |d| {
                         d.child(
-                            button("pick-brand", format!("Brand: {} ▾", self.car_brand.as_deref().unwrap_or("All")))
-                                .on_click(cx.listener(|this, _, window, cx| this.open_brand_menu(window, cx))),
+                            button_pad(
+                                "pick-brand",
+                                format!("Brand: {} ▾", self.car_brand.as_deref().unwrap_or("All")),
+                                self.pad_label(NavAction::SubPrev),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| this.open_brand_menu(window, cx))),
                         )
                     })
-                    .child(button("pick-close", "Close").on_click(cx.listener(|this, _, _, cx| {
-                        this.sort_menu_open = false;
-                        this.view_menu_open = false;
-                        this.picker = None;
-                        cx.notify();
-                    }))),
+                    .child(
+                        button_pad("pick-close", "Close", self.pad_label(NavAction::Back))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.sort_menu_open = false;
+                                this.view_menu_open = false;
+                                this.picker = None;
+                                cx.notify();
+                            })),
+                    ),
             )
             .child(div().h(px(12.)).flex_shrink_0())
             .child(body)
@@ -4539,16 +4759,16 @@ impl CmApp {
         };
         let dir = car.dir.clone();
         let actions = div()
-            .child(button("garage-change", "Change car").on_click(cx.listener(|this, _, window, cx| {
+            .child(button_pad("garage-change", "Change car", self.pad_label(NavAction::Confirm)).on_click(cx.listener(|this, _, window, cx| {
                 this.open_picker(PickerKind::Car, window);
                 cx.notify();
             })))
-            .child(button("open-folder", "Open folder").on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&dir))))
+            .child(button_pad("open-folder", "Open folder", self.pad_label(NavAction::Search)).on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&dir))))
             .when(car.has_data_acd && !car.has_data_dir, |d| {
                 d.child(button("unpack", "Unpack data.acd").on_click(cx.listener(Self::unpack_acd)))
             })
             .when(car.has_data_dir, |d| d.child(button("pack", "Pack data.acd").on_click(cx.listener(Self::pack_acd))))
-            .child(primary_button("drive-car", "Drive").on_click(cx.listener(Self::open_quick_drive)));
+            .child(primary_button_pad("drive-car", "Drive", self.pad_label(NavAction::Back)).on_click(cx.listener(Self::open_quick_drive)));
         let sub = [car.brand.clone(), car.class.clone(), car.year.clone()]
             .into_iter()
             .flatten()
@@ -4637,14 +4857,14 @@ impl CmApp {
         let l = &t.layout;
         let dir = self.ac_root.as_ref().map(|r| r.join("content").join("tracks").join(&t.track_id));
         let actions = div()
-            .child(button("tracks-change", "Change track").on_click(cx.listener(|this, _, window, cx| {
+            .child(button_pad("tracks-change", "Change track", self.pad_label(NavAction::Confirm)).on_click(cx.listener(|this, _, window, cx| {
                 this.open_picker(PickerKind::Track, window);
                 cx.notify();
             })))
             .when_some(dir, |d, dir| {
-                d.child(button("track-folder", "Open folder").on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&dir))))
+                d.child(button_pad("track-folder", "Open folder", self.pad_label(NavAction::Search)).on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&dir))))
             })
-            .child(primary_button("drive-track", "Drive").on_click(cx.listener(Self::open_quick_drive)));
+            .child(primary_button_pad("drive-track", "Drive", self.pad_label(NavAction::Back)).on_click(cx.listener(Self::open_quick_drive)));
         let place = [l.city.clone(), l.country.clone()]
             .into_iter()
             .flatten()
@@ -5039,7 +5259,7 @@ impl CmApp {
                 .child(driver)
                 .child(
                     div().flex().justify_end().child(
-                        primary_button("save-settings", "Save")
+                        primary_button_pad("save-settings", "Save", self.pad_label(NavAction::Primary))
                             .on_click(cx.listener(Self::save_settings)),
                     ),
                 )
@@ -5152,16 +5372,19 @@ impl Render for CmApp {
                         this.time_dragging = false;
                     }
                 }
-                if this.input_device != crate::nav::InputDevice::Mouse {
-                    this.input_device = crate::nav::InputDevice::Mouse;
+                if this.input_device != InputDevice::Mouse {
+                    this.input_device = InputDevice::Mouse;
+                    if let Some(events) = &this.events {
+                        events.update(cx, |v, cx| v.set_input_device(InputDevice::Mouse, cx));
+                    }
                     if let Some(mods_view) = &this.mods_view {
-                        mods_view.update(cx, |v, cx| v.set_input_device(crate::nav::InputDevice::Mouse, cx));
+                        mods_view.update(cx, |v, cx| v.set_input_device(InputDevice::Mouse, cx));
                     }
                     if let Some(csp_view) = &this.csp_view {
-                        csp_view.update(cx, |v, cx| v.set_input_device(crate::nav::InputDevice::Mouse, cx));
+                        csp_view.update(cx, |v, cx| v.set_input_device(InputDevice::Mouse, cx));
                     }
                     if let Some(online) = &this.online {
-                        online.update(cx, |v, cx| v.set_input_device(crate::nav::InputDevice::Mouse, cx));
+                        online.update(cx, |v, cx| v.set_input_device(InputDevice::Mouse, cx));
                     }
                     cx.notify();
                 }

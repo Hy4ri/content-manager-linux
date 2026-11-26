@@ -10,10 +10,10 @@ use gpui::{
     UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
 };
 
-use crate::nav::InputDevice;
+use crate::nav::{InputDevice, NavAction, PadKind};
 use crate::text_input::TextInput;
 use crate::theme;
-use crate::widgets::{button, chip, focus_ring, panel, picture, primary_button, segmented};
+use crate::widgets::{button, button_pad, chip, focus_ring, panel, picture, primary_button, segmented};
 
 const MAX_W: f32 = 1120.;
 const ROW_H: f32 = 88.;
@@ -101,6 +101,7 @@ pub struct ModsView {
     working: bool,
     scan_gen: u64,
     input_device: InputDevice,
+    connected_pad: Option<PadKind>,
     warning: Option<String>,
     message: Option<(String, bool)>,
 }
@@ -128,6 +129,7 @@ impl ModsView {
             working: false,
             scan_gen: 0,
             input_device: InputDevice::Mouse,
+            connected_pad: None,
             warning: None,
             message: None,
         };
@@ -140,6 +142,17 @@ impl ModsView {
             self.input_device = device;
             cx.notify();
         }
+    }
+
+    pub fn set_connected_pad(&mut self, pad: Option<PadKind>, cx: &mut Context<Self>) {
+        if self.connected_pad != pad {
+            self.connected_pad = pad;
+            cx.notify();
+        }
+    }
+
+    fn pad_label(&self, a: NavAction) -> Option<&'static str> {
+        self.connected_pad.map(|p| p.label(a))
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -366,12 +379,31 @@ impl ModsView {
                 }
                 false
             }
+            "DPAD_LEFT" | "DPAD_RIGHT" => {
+                let filters = [ModFilter::All, ModFilter::Cars, ModFilter::Tracks, ModFilter::Disabled];
+                let at = filters.iter().position(|&f| f == self.filter).unwrap_or(0);
+                let next = if name == "DPAD_RIGHT" {
+                    (at + 1) % filters.len()
+                } else {
+                    (at + filters.len() - 1) % filters.len()
+                };
+                self.filter = filters[next];
+                self.confirm_delete = None;
+                self.refilter(cx);
+                true
+            }
             "X" => {
                 if let Some(&idx) = self.visible.get(self.selected) {
                     self.open_item_folder(idx, cx);
                     return true;
                 }
                 false
+            }
+            "Y" => {
+                if !self.loading && !self.working {
+                    self.refresh(cx);
+                }
+                true
             }
             "B" => {
                 if self.confirm_delete.is_some() {
@@ -491,31 +523,42 @@ impl ModsView {
                         .child("Confirm delete"),
                 )
                 .child(
-                    button(("mod-cancel-del", item_idx), "Cancel").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.confirm_delete = None;
-                            cx.notify();
-                        },
-                    )),
+                    button_pad(
+                        ("mod-cancel-del", item_idx),
+                        "Cancel",
+                        (vis_idx == self.selected).then(|| self.pad_label(NavAction::Back)).flatten(),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.confirm_delete = None;
+                        cx.notify();
+                    })),
                 );
         } else {
             let toggle_label = if m.enabled { "Disable" } else { "Enable" };
+            let is_sel = vis_idx == self.selected;
             actions = actions
                 .child(
-                    button(("mod-toggle", item_idx), toggle_label)
-                        .when(self.working, |d| d.opacity(0.6))
-                        .when(!self.working, |d| {
-                            d.on_click(cx.listener(move |this, _, _, cx| {
-                                this.toggle_enabled(item_idx, cx);
-                            }))
-                        }),
+                    button_pad(
+                        ("mod-toggle", item_idx),
+                        toggle_label,
+                        is_sel.then(|| self.pad_label(NavAction::Confirm)).flatten(),
+                    )
+                    .when(self.working, |d| d.opacity(0.6))
+                    .when(!self.working, |d| {
+                        d.on_click(cx.listener(move |this, _, _, cx| {
+                            this.toggle_enabled(item_idx, cx);
+                        }))
+                    }),
                 )
                 .child(
-                    button(("mod-folder", item_idx), "Folder").on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.open_item_folder(item_idx, cx);
-                        },
-                    )),
+                    button_pad(
+                        ("mod-folder", item_idx),
+                        "Folder",
+                        is_sel.then(|| self.pad_label(NavAction::Secondary)).flatten(),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_item_folder(item_idx, cx);
+                    })),
                 );
             if !is_stock {
                 actions = actions.child(
@@ -696,7 +739,7 @@ impl Render for ModsView {
                                 })),
                             )
                             .child(
-                                button("mods-refresh", "Refresh")
+                                button_pad("mods-refresh", "Refresh", self.pad_label(NavAction::Search))
                                     .when(self.loading || self.working, |d| d.opacity(0.6))
                                     .when(!self.loading && !self.working, |d| {
                                         d.on_click(cx.listener(|this, _, _, cx| {
