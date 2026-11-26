@@ -14,10 +14,10 @@ use gpui::{
     Stateful, Window, div, prelude::*, px,
 };
 
-use crate::nav::InputDevice;
+use crate::nav::{InputDevice, NavAction, PadKind};
 use crate::text_input::TextInput;
 use crate::theme;
-use crate::widgets::{button, chip, focus_ring, panel, primary_button, segmented};
+use crate::widgets::{button, button_pad, chip, focus_ring, panel, primary_button_pad, segmented};
 
 const MAX_W: f32 = 1120.;
 const CARD_MIN_W: f32 = 250.;
@@ -51,6 +51,7 @@ pub struct CspView {
     scroll: ScrollHandle,
     inputs: HashMap<RowRef, Entity<TextInput>>,
     input_device: InputDevice,
+    connected_pad: Option<PadKind>,
     message: Option<(String, bool)>,
 }
 
@@ -67,6 +68,7 @@ impl CspView {
             scroll: ScrollHandle::new(),
             inputs: HashMap::new(),
             input_device: InputDevice::Mouse,
+            connected_pad: None,
             message: None,
         };
         view.load(cx);
@@ -93,6 +95,17 @@ impl CspView {
             self.input_device = device;
             cx.notify();
         }
+    }
+
+    pub fn set_connected_pad(&mut self, pad: Option<PadKind>, cx: &mut Context<Self>) {
+        if self.connected_pad != pad {
+            self.connected_pad = pad;
+            cx.notify();
+        }
+    }
+
+    fn pad_label(&self, a: NavAction) -> Option<&'static str> {
+        self.connected_pad.map(|p| p.label(a))
     }
 
     /// Whether a text field has keyboard focus (so typed keys are not navigation).
@@ -327,7 +340,15 @@ impl CspView {
             self.save(cx);
             return true;
         }
+        if name == "X" && !c.dirty_files().is_empty() {
+            self.revert(cx);
+            return true;
+        }
         let Some(m) = self.open else {
+            if name == "Y" {
+                self.load(cx);
+                return true;
+            }
             let n = c.modules.len();
             if n == 0 {
                 return false;
@@ -488,7 +509,7 @@ impl CspView {
 .child(format!("{changed} changed")),
                                     )
                                 })
-                                .child(button("csp-reload", "Reload").on_click(cx.listener(|this, _, _, cx| this.load(cx)))),
+                                .child(button_pad("csp-reload", "Reload", self.pad_label(NavAction::Search)).on_click(cx.listener(|this, _, _, cx| this.load(cx)))),
                         ),
                 )
                 .when_some(c, |d, c| {
@@ -518,7 +539,7 @@ impl CspView {
                     .items_center()
                     .gap_3()
                     .child(
-                        button("csp-back", "‹ Back")
+                        button_pad("csp-back", "‹ Back", self.pad_label(NavAction::Back))
                             .on_click(cx.listener(|this, _, _, cx| this.close_module(cx))),
                     )
                     .child(
@@ -1049,12 +1070,12 @@ impl CspView {
                     )
                     .when(!dirty.is_empty(), |d| {
                         d.child(
-                            button("csp-revert", "Revert")
+                            button_pad("csp-revert", "Revert", self.pad_label(NavAction::Secondary))
                                 .on_click(cx.listener(|this, _, _, cx| this.revert(cx))),
                         )
                     })
                     .child(
-                        primary_button("csp-save", "Save")
+                        primary_button_pad("csp-save", "Save", self.pad_label(NavAction::Primary))
                             .when(dirty.is_empty(), |d| d.opacity(0.5))
                             .when(!dirty.is_empty(), |d| {
                                 d.on_click(cx.listener(|this, _, _, cx| this.save(cx)))

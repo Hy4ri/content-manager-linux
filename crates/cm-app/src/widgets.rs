@@ -71,11 +71,61 @@ pub fn segmented(items: Vec<Stateful<Div>>) -> Div {
         .children(items.into_iter().map(|i| i.into_any_element()).collect::<Vec<AnyElement>>())
 }
 
+/// Compact inline controller button cap (e.g. "A", "✕", "LB") for normal surfaces.
+pub fn pad_badge(label: &str) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .min_w(px(20.))
+        .px_1p5()
+        .py_0p5()
+        .rounded(px(4.))
+        .bg(theme::overlay())
+        .border_1()
+        .border_color(theme::border())
+        .text_xs()
+        .font_weight(FontWeight::BOLD)
+        .text_color(theme::text())
+        .child(label.to_string())
+}
+
+/// Compact inline controller button cap for high-contrast primary accent buttons.
+pub fn pad_badge_on_accent(label: &str) -> Div {
+    let fg: Hsla = theme::on_accent().into();
+    div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .min_w(px(20.))
+        .px_1p5()
+        .py_0p5()
+        .rounded(px(4.))
+        .bg(fg.opacity(0.16))
+        .border_1()
+        .border_color(fg.opacity(0.32))
+        .text_xs()
+        .font_weight(FontWeight::BOLD)
+        .text_color(theme::on_accent())
+        .child(label.to_string())
+}
+
 pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    button_pad(id, label, None)
+}
+
+pub fn button_pad(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    pad_label: Option<&str>,
+) -> Stateful<Div> {
     div()
         .id(id)
         .flex()
         .items_center()
+        .gap_2()
         .min_h(px(theme::MIN_TARGET_H))
         .px_3()
         .py_1()
@@ -86,14 +136,24 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> State
         .text_sm()
         .cursor_pointer()
         .hover(|s| s.bg(theme::panel_hover()))
+        .when_some(pad_label, |d, lbl| d.child(pad_badge(lbl)))
         .child(label.into())
 }
 
 pub fn primary_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    primary_button_pad(id, label, None)
+}
+
+pub fn primary_button_pad(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    pad_label: Option<&str>,
+) -> Stateful<Div> {
     div()
         .id(id)
         .flex()
         .items_center()
+        .gap_2()
         .min_h(px(theme::MIN_TARGET_H))
         .px_6()
         .py_2()
@@ -103,6 +163,7 @@ pub fn primary_button(id: impl Into<ElementId>, label: impl Into<SharedString>) 
         .font_weight(FontWeight::BOLD)
         .cursor_pointer()
         .hover(|s| s.bg(theme::accent_hover()))
+        .when_some(pad_label, |d, lbl| d.child(pad_badge_on_accent(lbl)))
         .child(label.into())
 }
 

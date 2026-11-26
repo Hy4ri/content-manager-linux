@@ -26,10 +26,10 @@ use gpui::{
 };
 
 use crate::events_view::Running;
-use crate::nav::{InputDevice, NavAction};
+use crate::nav::{InputDevice, NavAction, PadKind};
 use crate::text_input::TextInput;
 use crate::theme;
-use crate::widgets::{button, chip, focus_ring, panel, picture, section_title, segmented, track_map};
+use crate::widgets::{button, button_pad, chip, focus_ring, panel, picture, section_title, segmented, track_map};
 
 impl EventEmitter<Running> for OnlineView {}
 
@@ -318,6 +318,7 @@ pub struct OnlineView {
     /// Installed CSP build; servers may require a minimum.
     csp_build: Option<u32>,
     input_device: InputDevice,
+    connected_pad: Option<PadKind>,
     running: bool,
     /// Page-level notice; `true` is a problem.
     message: Option<(String, bool)>,
@@ -395,6 +396,7 @@ impl OnlineView {
             steam_id: online::steam_id(),
             csp_build,
             input_device: InputDevice::Mouse,
+            connected_pad: None,
             running: false,
             message: None,
             lobby: Vec::new(),
@@ -500,6 +502,17 @@ impl OnlineView {
         }
     }
 
+    pub fn set_connected_pad(&mut self, pad: Option<PadKind>, cx: &mut Context<Self>) {
+        if self.connected_pad != pad {
+            self.connected_pad = pad;
+            cx.notify();
+        }
+    }
+
+    fn pad_label(&self, a: NavAction) -> Option<&'static str> {
+        self.connected_pad.map(|p| p.label(a))
+    }
+
     /// Whether one of the page's text fields has keyboard focus (typed keys are not navigation).
     pub fn input_focused(&self, window: &Window, cx: &App) -> bool {
         [&self.search, &self.address, &self.password].iter().any(|i| i.read(cx).is_focused(window))
@@ -553,7 +566,7 @@ impl OnlineView {
         if !self.visible.is_empty() {
             hints.push((NavAction::Secondary, "Favourite"));
         }
-        hints.push((NavAction::Search, if self.is_pad() { "Sort" } else { "Search" }));
+        hints.push((NavAction::Search, if self.connected_pad.is_some() || self.is_pad() { "Sort" } else { "Search" }));
         hints.push((NavAction::Primary, "Refresh"));
         hints.push((NavAction::Back, "Back"));
         hints
@@ -1746,7 +1759,7 @@ impl OnlineView {
                         Source::Lobby => self.lobby_loading,
                         _ => self.lookups.values().any(|l| matches!(l, Lookup::Loading)),
                     };
-                    button("online-refresh", if busy { "Refreshing…" } else { "Refresh" }).when(busy, |d| d.opacity(0.6))
+                    button_pad("online-refresh", if busy { "Refreshing…" } else { "Refresh" }, self.pad_label(NavAction::Primary)).when(busy, |d| d.opacity(0.6))
                 }
                 BarItem::AddServer => button("online-add", "Add server"),
             };
@@ -2014,16 +2027,16 @@ impl OnlineView {
                     .flex_col()
                     .gap_2()
                     .flex_shrink_0()
-                    .child(button("online-back", "Back").on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close_detail(cx))))
+                    .child(button_pad("online-back", "Back", self.pad_label(NavAction::Back)).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close_detail(cx))))
                     .child(
-                        button("online-fav", if favourite { "★" } else { "☆" })
+                        button_pad("online-fav", if favourite { "★" } else { "☆" }, self.pad_label(NavAction::Secondary))
                             .justify_center()
                             .text_lg()
                             .text_color(if favourite { theme::accent() } else { theme::muted() })
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_detail_favourite(cx))),
                     )
                     .child(
-                        button("online-reload", if d.loading { "Refreshing…" } else { "Refresh" })
+                        button_pad("online-reload", if d.loading { "Refreshing…" } else { "Refresh" }, self.pad_label(NavAction::Search))
                             .when(d.loading, |b| b.opacity(0.6))
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.load_detail(cx))),
                     ),
