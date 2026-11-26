@@ -1,7 +1,9 @@
 //! The main window: Quick Drive, Cars, Tracks, Install and Settings pages.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::rc::Rc;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -11,10 +13,10 @@ use ac_core::race::{self, Conditions, Mode, QuickDrive};
 use ac_core::settings::{PickerView, Settings};
 use ac_core::{acd, install, launch, mods, paths, update};
 use gpui::{
-    BoxShadow, ClickEvent, Context, Div, Entity, FocusHandle, FontWeight, KeyDownEvent,
-    ModifiersChangedEvent, MouseButton, MouseMoveEvent, ObjectFit, PathPromptOptions,
-    ScrollStrategy, SharedString, UniformListScrollHandle, Window, deferred, div, img, point,
-    prelude::*, px, rgba, uniform_list,
+    Bounds, BoxShadow, ClickEvent, Context, Div, Entity, FocusHandle, FontWeight, KeyDownEvent,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit,
+    PathPromptOptions, Pixels, ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle,
+    Window, canvas, deferred, div, img, point, prelude::*, px, relative, rgba, uniform_list,
 };
 
 use crate::browser_downloads::{download_base_dir, manage_archives};
@@ -206,6 +208,15 @@ pub(crate) fn format_track_length(raw: &str) -> String {
 const CHROME_H: f32 = 2. * 57.;
 /// Fixed width of the Drive page's session column.
 const DRIVE_SESSION_W: f32 = 460.;
+/// Time-of-day slider: arrow/d-pad step and the snap used while dragging with the mouse.
+const TIME_STEP_PAD: u32 = 15 * 60;
+const TIME_STEP_DRAG: u32 = 5 * 60;
+/// Hour labels under the time slider; must span `race::TIME_MIN..=TIME_MAX` evenly.
+const TIME_TICKS: [&str; 6] = ["08", "10", "12", "14", "16", "18"];
+/// Weather dropdown geometry, used to decide whether it opens below or above its button.
+const WEATHER_ROW_H: f32 = 36.;
+const WEATHER_MENU_PAD: f32 = 6.;
+const WEATHER_MENU_MIN_W: f32 = 240.;
 /// Car card height that is not the picture: `p_3` padding, title block, two `gap_2` and the skin row
 /// (measured in a 1360x768 and a 1920x1080 screenshot).
 const DRIVE_CAR_CHROME_H: f32 = 24. + 78. + 16. + 40.;
@@ -447,6 +458,14 @@ pub struct CmApp {
     ambient: i32,
     weather_id: String,
     penalties: bool,
+    /// Weather dropdown on the Drive page: `Some(focused option)` while open.
+    weather_menu: Option<usize>,
+    weather_scroll: ScrollHandle,
+    /// Last painted bounds of the weather button and the time slider rail (window coordinates),
+    /// so the dropdown can be placed and mouse x mapped to a time.
+    weather_anchor: Rc<Cell<Bounds<Pixels>>>,
+    time_rail: Rc<Cell<Bounds<Pixels>>>,
+    time_dragging: bool,
 
     install: Option<InstallState>,
     install_generation: u64,
@@ -688,6 +707,11 @@ impl CmApp {
             ambient: c.ambient_c as i32,
             weather_id: c.weather_id,
             penalties: last.penalties || last.car_id.is_empty(),
+            weather_menu: None,
+            weather_scroll: ScrollHandle::new(),
+            weather_anchor: Rc::default(),
+            time_rail: Rc::default(),
+            time_dragging: false,
             install: None,
             install_generation: 0,
             busy: false,
@@ -2099,6 +2123,8 @@ impl CmApp {
     }
 
     fn goto_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        self.weather_menu = None;
+        self.time_dragging = false;
         if matches!(page, Page::Career | Page::SpecialEvents) {
             self.ensure_events(page == Page::Career, cx);
         }
@@ -2380,9 +2406,29 @@ impl CmApp {
         let mut hints = vec![h(NavAction::TabPrev, "Prev tab"), h(NavAction::TabNext, "Next tab")];
         match self.page {
             Page::Browser => hints.push(h(NavAction::Back, "Back to Drive")),
+            Page::QuickDrive if self.weather_menu.is_some() => {
+                hints.push(hint(&format!("{} ↕", dev.label(NavAction::Up)), "Move"));
+                hints.push(h(NavAction::Confirm, "Select weather"));
+                hints.push(h(NavAction::Back, "Close"));
+                hints.push(h(NavAction::Primary, "Go!"));
+            }
             Page::QuickDrive => {
-                hints.push(hint(&format!("{} ↕↔", dev.label(NavAction::Up)), "Move / change"));
-                hints.push(h(NavAction::Confirm, "Open"));
+                let rows = self.drive_rows();
+                let row = rows[self.drive_focus.min(rows.len() - 1)];
+                let change = match row {
+                    DriveRow::Time => "Move / ±15 min",
+                    DriveRow::Car => "Move / skin",
+                    DriveRow::Track => "Move",
+                    _ => "Move / change",
+                };
+                hints.push(hint(&format!("{} ↕↔", dev.label(NavAction::Up)), change));
+                match row {
+                    DriveRow::Car => hints.push(h(NavAction::Confirm, "Change car")),
+                    DriveRow::Track => hints.push(h(NavAction::Confirm, "Change track")),
+                    DriveRow::Weather => hints.push(h(NavAction::Confirm, "Choose weather")),
+                    DriveRow::Mode | DriveRow::Penalties => hints.push(h(NavAction::Confirm, "Toggle")),
+                    _ => {}
+                }
                 hints.push(h(NavAction::Secondary, "Next skin"));
                 hints.push(h(NavAction::Primary, "Go!"));
             }
@@ -2482,6 +2528,35 @@ impl CmApp {
             .child(button((id, 1usize), "+").on_click(cx.listener(move |this, _, _, cx| this.drive_adjust(row, 1, cx))))
     }
 
+    fn open_weather_menu(&mut self) {
+        let at = self.content.weather.iter().position(|w| w.id == self.weather_id).unwrap_or(0);
+        if !self.content.weather.is_empty() {
+            self.weather_menu = Some(at);
+            self.weather_scroll.scroll_to_item(at);
+        }
+    }
+
+    fn focus_weather_option(&mut self, at: usize) {
+        self.weather_menu = Some(at);
+        self.weather_scroll.scroll_to_item(at);
+    }
+
+    /// Maps a window x coordinate on the time rail to a time of day, snapped to `TIME_STEP_DRAG`.
+    fn set_time_from_x(&mut self, x: Pixels, cx: &mut Context<Self>) {
+        let rail = self.time_rail.get();
+        let w = f32::from(rail.size.width);
+        if w <= 0. {
+            return;
+        }
+        let f = (f32::from(x - rail.origin.x) / w).clamp(0., 1.);
+        let raw = race::TIME_MIN as f32 + f * (race::TIME_MAX - race::TIME_MIN) as f32;
+        let snapped = ((raw / TIME_STEP_DRAG as f32).round() as u32 * TIME_STEP_DRAG).clamp(race::TIME_MIN, race::TIME_MAX);
+        if snapped != self.time_seconds {
+            self.time_seconds = snapped;
+            cx.notify();
+        }
+    }
+
     fn open_quick_drive(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.page = Page::QuickDrive;
         cx.notify();
@@ -2496,7 +2571,7 @@ impl CmApp {
             ModeKind::Hotlap => {}
             ModeKind::Race => rows.extend([Laps, Opponents, Ai, Grid]),
         }
-        rows.extend([Penalties, Time, Temp, Weather]);
+        rows.extend([Penalties, Weather, Time, Temp]);
         rows
     }
 
@@ -2525,7 +2600,10 @@ impl CmApp {
             DriveRow::Grid => self.start_position = (self.start_position as i32 + dir).clamp(1, self.opponents as i32 + 1) as u32,
             DriveRow::Penalties => self.penalties = !self.penalties,
             DriveRow::Time => {
-                self.time_seconds = (self.time_seconds as i32 + dir * 1800).clamp(race::TIME_MIN as i32, race::TIME_MAX as i32) as u32
+                // Step to the next/previous whole quarter hour, so a dragged 14:05 goes to 14:15 / 14:00.
+                let (t, s) = (self.time_seconds, TIME_STEP_PAD);
+                let next = if dir > 0 { (t / s + 1) * s } else { t.div_ceil(s).saturating_sub(1) * s };
+                self.time_seconds = next.clamp(race::TIME_MIN, race::TIME_MAX);
             }
             DriveRow::Temp => self.ambient = (self.ambient + dir).clamp(0, 40),
             DriveRow::Weather => {
@@ -2541,6 +2619,27 @@ impl CmApp {
 
     /// One controller/keyboard press on the Drive page (tab/sub-tab buttons are handled earlier).
     fn drive_press(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(at) = self.weather_menu {
+            let n = self.content.weather.len();
+            match name {
+                "DPAD_UP" if at > 0 => self.focus_weather_option(at - 1),
+                "DPAD_DOWN" if at + 1 < n => self.focus_weather_option(at + 1),
+                "A" => {
+                    if let Some(w) = self.content.weather.get(at) {
+                        self.weather_id = w.id.clone();
+                    }
+                    self.weather_menu = None;
+                }
+                "B" => self.weather_menu = None,
+                "START" => {
+                    self.weather_menu = None;
+                    self.start_game(cx);
+                }
+                _ => {}
+            }
+            cx.notify();
+            return;
+        }
         let rows = self.drive_rows();
         let at = self.drive_focus.min(rows.len() - 1);
         let row = rows[at];
@@ -2552,7 +2651,8 @@ impl CmApp {
             "A" => match row {
                 DriveRow::Car => self.open_picker(PickerKind::Car, window),
                 DriveRow::Track => self.open_picker(PickerKind::Track, window),
-                DriveRow::Mode | DriveRow::Penalties | DriveRow::Weather => self.drive_adjust(row, 1, cx),
+                DriveRow::Mode | DriveRow::Penalties => self.drive_adjust(row, 1, cx),
+                DriveRow::Weather => self.open_weather_menu(),
                 _ => {}
             },
             "X" => self.drive_adjust(DriveRow::Car, 1, cx),
@@ -2975,7 +3075,15 @@ impl CmApp {
 
     /// A labelled, focusable Drive row; the ring only shows for keyboard/pad.
     fn drive_row(&self, i: usize, label: &'static str, control: impl IntoElement, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        let focused = self.input_device.shows_focus() && self.picker.is_none() && self.drive_focus == i;
+        self.drive_row_el(i, div().text_sm().text_color(theme::muted()).child(label), control, cx)
+    }
+
+    fn drive_row_focused(&self, i: usize) -> bool {
+        self.input_device.shows_focus() && self.picker.is_none() && self.weather_menu.is_none() && self.drive_focus == i
+    }
+
+    fn drive_row_el(&self, i: usize, label: impl IntoElement, control: impl IntoElement, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let focused = self.drive_row_focused(i);
         focus_ring(
             div()
                 .id(("drow", i))
@@ -2993,8 +3101,231 @@ impl CmApp {
             this.drive_focus = i;
             cx.notify();
         }))
-        .child(div().text_sm().text_color(theme::muted()).child(label))
+        .child(label)
         .child(control)
+    }
+
+    /// Time of day: label + current time on top, a full-width slider rail with hour ticks below.
+    fn time_row(&self, i: usize, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let span = (race::TIME_MAX - race::TIME_MIN) as f32;
+        let f = ((self.time_seconds.saturating_sub(race::TIME_MIN)) as f32 / span).clamp(0., 1.);
+        let hour = self.time_seconds / 3600;
+        let phase = match hour {
+            ..=10 => "Morning",
+            11..=13 => "Midday",
+            14..=16 => "Afternoon",
+            _ => "Evening",
+        };
+        let rail_bounds = self.time_rail.clone();
+        // THUMB is 18px; the rail is inset by half of it so the thumb never overhangs at 08:00 / 18:00.
+        let thumb = 18.;
+        let rail = div()
+            .relative()
+            .size_full()
+            .child(canvas(move |b, _, _| rail_bounds.set(b), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+            .child(div().absolute().left_0().right_0().top(px(11.)).h(px(6.)).rounded_full().bg(theme::overlay()))
+            .child(div().absolute().left_0().top(px(11.)).h(px(6.)).w(relative(f)).rounded_full().bg(theme::accent()))
+            .child(
+                div()
+                    .absolute()
+                    .top(px(5.))
+                    .left(relative(f))
+                    .ml(px(-thumb / 2.))
+                    .size(px(thumb))
+                    .rounded_full()
+                    .bg(theme::text())
+                    .border_3()
+                    .border_color(theme::accent()),
+            );
+        let slider = div()
+            .id("time-slider")
+            .h(px(28.))
+            .px(px(thumb / 2.))
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                    this.drive_focus = i;
+                    this.time_dragging = true;
+                    this.set_time_from_x(e.position.x, cx);
+                    cx.notify();
+                }),
+            )
+            .child(rail);
+        let ticks = div().flex().justify_between().children(
+            TIME_TICKS.iter().map(|t| div().w(px(thumb)).text_center().text_xs().text_color(theme::faint()).child(*t)),
+        );
+        focus_ring(
+            div()
+                .id(("drow", i))
+                .flex()
+                .flex_col()
+                .gap_1()
+                .px_3()
+                .py_2()
+                .rounded(px(theme::RADIUS_SM))
+                .bg(theme::raised()),
+            self.drive_row_focused(i),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.drive_focus = i;
+            cx.notify();
+        }))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(div().text_sm().text_color(theme::muted()).child("Time of day"))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().text_xs().text_color(theme::muted()).child(phase))
+                        .child(div().text_base().font_weight(FontWeight::BOLD).child(fmt_time(self.time_seconds))),
+                ),
+        )
+        .child(slider)
+        .child(ticks)
+    }
+
+    /// Dropdown button showing the chosen weather; the menu itself is drawn by `weather_menu_overlay`.
+    fn weather_button(&self, cx: &mut Context<Self>) -> Div {
+        let open = self.weather_menu.is_some();
+        let name = self
+            .content
+            .weather
+            .iter()
+            .find(|w| w.id == self.weather_id)
+            .map(|w| w.name.clone())
+            .unwrap_or_else(|| if self.weather_id.is_empty() { "No weather found".into() } else { self.weather_id.clone() });
+        let anchor = self.weather_anchor.clone();
+        div()
+            .relative()
+            .w(px(220.))
+            .child(
+                div()
+                    .id("weather-open")
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .min_h(px(theme::MIN_TARGET_H))
+                    .px_3()
+                    .rounded(px(theme::RADIUS_SM))
+                    .border_1()
+                    .border_color(if open { theme::accent() } else { theme::border() })
+                    .bg(theme::panel())
+                    .text_sm()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme::panel_hover()))
+                    .child(div().flex_1().min_w_0().truncate().child(name))
+                    .child(div().text_xs().text_color(theme::muted()).child(if open { "▴" } else { "▾" }))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.weather_menu.is_some() {
+                            this.weather_menu = None;
+                        } else {
+                            this.drive_focus = this.drive_rows().iter().position(|r| *r == DriveRow::Weather).unwrap_or(0);
+                            this.open_weather_menu();
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(canvas(move |b, _, _| anchor.set(b), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+    }
+
+    /// The open weather dropdown plus a click-away backdrop, placed below its button or above
+    /// it when there is not enough room above the footer.
+    fn weather_menu_overlay(&self, window: &Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let focus = self.weather_menu?;
+        let anchor = self.weather_anchor.get();
+        let vp_h = f32::from(window.viewport_size().height);
+        let footer = 56.;
+        let gap = 4.;
+        let full_h = self.content.weather.len() as f32 * WEATHER_ROW_H + 2. * WEATHER_MENU_PAD + 2.;
+        let top = f32::from(anchor.origin.y);
+        let bottom = f32::from(anchor.origin.y + anchor.size.height);
+        let below = vp_h - footer - 8. - (bottom + gap);
+        let above = top - gap - 64.;
+        let (menu_top, menu_h) = if full_h <= below || below >= above {
+            (bottom + gap, full_h.min(below))
+        } else {
+            let h = full_h.min(above);
+            (top - gap - h, h)
+        };
+        let w = f32::from(anchor.size.width).max(WEATHER_MENU_MIN_W);
+        let left = f32::from(anchor.origin.x + anchor.size.width) - w;
+        let shows = self.input_device.shows_focus();
+        let mut list = div()
+            .id("weather-menu-list")
+            .flex()
+            .flex_col()
+            .size_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.weather_scroll);
+        for (i, w) in self.content.weather.iter().enumerate() {
+            let active = w.id == self.weather_id;
+            let id = w.id.clone();
+            let row = div()
+                .id(("weather-opt", i))
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .justify_between()
+                .h(px(WEATHER_ROW_H))
+                .px_3()
+                .rounded(px(theme::RADIUS_SM))
+                .text_sm()
+                .cursor_pointer()
+                .when(active, |d| d.bg(theme::overlay()).font_weight(FontWeight::SEMIBOLD).text_color(theme::text()))
+                .when(!active, |d| d.text_color(theme::muted()).hover(|s| s.bg(theme::raised()).text_color(theme::text())))
+                .child(div().flex_1().min_w_0().truncate().child(w.name.clone()))
+                .when(active, |d| d.child(div().text_xs().font_weight(FontWeight::BOLD).text_color(theme::accent()).child("✓")))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.weather_id = id.clone();
+                    this.weather_menu = None;
+                    cx.notify();
+                }));
+            list = list.child(focus_ring(row, shows && focus == i));
+        }
+        let menu = div()
+            .id("weather-menu")
+            .absolute()
+            .left(px(left))
+            .top(px(menu_top))
+            .w(px(w))
+            .h(px(menu_h))
+            .p(px(WEATHER_MENU_PAD))
+            .rounded(px(theme::RADIUS_SM))
+            .bg(theme::surface())
+            .border_1()
+            .border_color(theme::border())
+            .shadow(vec![BoxShadow {
+                color: rgba(0x00000099).into(),
+                offset: point(px(0.), px(6.)),
+                blur_radius: px(16.),
+                spread_radius: px(0.),
+            }])
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(list);
+        Some(
+            div()
+                .id("weather-menu-backdrop")
+                .absolute()
+                .inset_0()
+                .occlude()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.weather_menu = None;
+                        cx.notify();
+                    }),
+                )
+                .child(menu)
+                .into_any_element(),
+        )
     }
 
     fn quick_drive_page(&self, car_h: f32, track_h: f32, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3109,6 +3440,9 @@ impl CmApp {
         let mut session = div().flex().flex_col().gap_2().child(section_title("Session"));
         for (i, row) in rows.iter().enumerate().skip(2) {
             let row = *row;
+            if row == DriveRow::Weather {
+                session = session.child(div().mt_2().child(section_title("Conditions")));
+            }
             let el = match row {
                 DriveRow::Mode => self.drive_row(
                     i,
@@ -3152,31 +3486,21 @@ impl CmApp {
                     ]),
                     cx,
                 ),
-                DriveRow::Time => self.drive_row(i, "Time", self.stepper("time", fmt_time(self.time_seconds), row, 96., cx), cx),
+                DriveRow::Time => self.time_row(i, cx),
                 DriveRow::Temp => {
                     let road = race::road_temperature(self.time_seconds as f64, self.ambient as f64, 1.0);
-                    self.drive_row(
+                    self.drive_row_el(
                         i,
-                        "Temperature",
                         div()
                             .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(self.stepper("temp", format!("{}°C", self.ambient), row, 64., cx))
-                            .child(div().text_xs().text_color(theme::muted()).child(format!("road {road:.0}°C"))),
+                            .flex_col()
+                            .child(div().text_sm().text_color(theme::muted()).child("Air temperature"))
+                            .child(div().text_xs().text_color(theme::faint()).child(format!("Road {road:.0}°C at {}", fmt_time(self.time_seconds)))),
+                        self.stepper("temp", format!("{}°C", self.ambient), row, 96., cx),
                         cx,
                     )
                 }
-                DriveRow::Weather => {
-                    let name = self
-                        .content
-                        .weather
-                        .iter()
-                        .find(|w| w.id == self.weather_id)
-                        .map(|w| w.name.clone())
-                        .unwrap_or_else(|| self.weather_id.clone());
-                    self.drive_row(i, "Weather", self.stepper("weather", name, row, 150., cx), cx)
-                }
+                DriveRow::Weather => self.drive_row(i, "Weather", self.weather_button(cx), cx),
                 DriveRow::Car | DriveRow::Track => continue,
             };
             session = session.child(el);
@@ -4823,7 +5147,15 @@ impl Render for CmApp {
             .relative()
             .track_focus(&self.root_focus)
             .on_key_down(cx.listener(Self::root_key))
-            .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, _, cx| {
+            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                if this.time_dragging {
+                    if e.pressed_button == Some(MouseButton::Left) {
+                        this.set_time_from_x(e.position.x, cx);
+                    } else {
+                        // Button released outside the window: the up event never reached us.
+                        this.time_dragging = false;
+                    }
+                }
                 if this.input_device != crate::nav::InputDevice::Mouse {
                     this.input_device = crate::nav::InputDevice::Mouse;
                     if let Some(mods_view) = &this.mods_view {
@@ -4838,9 +5170,18 @@ impl Render for CmApp {
                     cx.notify();
                 }
             }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, _| this.time_dragging = false),
+            )
             .child(self.tab_bar(cx))
             .child(div().flex_1().min_h_0().min_w_0().child(page))
             .child(self.footer_bar(status, status_err, cx))
+            .children(if self.page == Page::QuickDrive && self.picker.is_none() {
+                self.weather_menu_overlay(window, cx)
+            } else {
+                None
+            })
             .children(self.picker.map(|_| {
                 div()
                     .absolute()
