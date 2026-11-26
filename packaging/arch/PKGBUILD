@@ -1,0 +1,93 @@
+# Maintainer: Mohammad Khair Hyari <https://github.com/Hy4ri>
+pkgname=cm-rs-bin
+pkgver=4.0.0
+_tag="v4.0.0"
+pkgrel=1
+pkgdesc="Native Content Manager for Assetto Corsa on Linux, written in Rust with GPUI"
+arch=('x86_64')
+url="https://github.com/Hy4ri/content-manager-linux"
+license=('MIT')
+provides=('cm-rs')
+conflicts=('cm-rs')
+depends=(
+  'alsa-lib'
+  'at-spi2-core'
+  'cairo'
+  'dbus'
+  'expat'
+  'fontconfig'
+  'freetype2'
+  'gcc-libs'
+  'glib2'
+  'glibc'
+  'libcups'
+  'libx11'
+  'libxcb'
+  'libxcomposite'
+  'libxdamage'
+  'libxext'
+  'libxfixes'
+  'libxkbcommon'
+  'libxkbcommon-x11'
+  'libxrandr'
+  'mesa'
+  'nspr'
+  'nss'
+  'pango'
+  'systemd-libs'
+  'vulkan-icd-loader'
+  'wayland'
+  'xdg-utils'
+)
+optdepends=(
+  'steam: launch Assetto Corsa through Proton'
+)
+options=('!strip' '!debug')
+source=(
+  "cm-rs-${_tag}-x86_64.AppImage::${url}/releases/download/${_tag}/cm-rs-${_tag}-x86_64.AppImage"
+  "cm-rs-${_tag}-LICENSE::https://raw.githubusercontent.com/Hy4ri/content-manager-linux/${_tag}/LICENSE"
+)
+noextract=(
+  "cm-rs-${_tag}-x86_64.AppImage"
+  "cm-rs-${_tag}-LICENSE"
+)
+sha256sums=(
+  '5b98d8c07c3fcc2a558a501665cac8f9b1855b0acacb8ee21e17de1209ba95c5'
+  '7f584c6a48654b1496df4c5133e9c9e30759134d549f1c9e3df03f2b05e34fa1'
+)
+
+prepare() {
+  chmod +x "${srcdir}/cm-rs-${_tag}-x86_64.AppImage"
+  rm -rf "${srcdir}/squashfs-root"
+  "${srcdir}/cm-rs-${_tag}-x86_64.AppImage" --appimage-extract >/dev/null
+}
+
+package() {
+  install -dm755 "${pkgdir}/opt/cm-rs"
+  cp -a "${srcdir}/squashfs-root/usr/lib/cm-rs/." "${pkgdir}/opt/cm-rs/"
+
+  # Use Arch system libxkbcommon rather than Ubuntu-bundled copies from the AppImage.
+  rm -f "${pkgdir}/opt/cm-rs/libxkbcommon.so.0" "${pkgdir}/opt/cm-rs/libxkbcommon-x11.so.0"
+  chmod 0755 "${pkgdir}/opt/cm-rs/cm-rs"
+
+  install -dm755 "${pkgdir}/usr/bin"
+  cat > "${pkgdir}/usr/bin/cm-rs" <<'EOF'
+#!/bin/sh
+export CM_RS_CEF_PATH=/opt/cm-rs
+exec /opt/cm-rs/cm-rs "$@"
+EOF
+  chmod 0755 "${pkgdir}/usr/bin/cm-rs"
+
+  install -Dm644 "${srcdir}/squashfs-root/cm-rs.desktop" \
+    "${pkgdir}/usr/share/applications/cm-rs.desktop"
+
+  local size
+  for size in 48 64 128 256 512; do
+    install -Dm644 \
+      "${srcdir}/squashfs-root/usr/share/icons/hicolor/${size}x${size}/apps/cm-rs.png" \
+      "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/cm-rs.png"
+  done
+
+  install -Dm644 "${srcdir}/cm-rs-${_tag}-LICENSE" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
